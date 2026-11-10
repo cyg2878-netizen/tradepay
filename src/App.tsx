@@ -91,6 +91,44 @@ export default function App() {
   const [dataVersion, setDataVersion] = useState(0);
   const refreshData = () => setDataVersion((v) => v + 1);
 
+  const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
+  const [isTestingAI, setIsTestingAI] = useState(false);
+
+  const runTestAI = async (overrideModel?: string) => {
+    setIsTestingAI(true);
+    try {
+      if (overrideModel) {
+        await fetch('/api/ai/set-model', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: overrideModel }),
+        });
+      }
+      const res = await fetch('/api/ai/parse-invoice', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: 'Reply with the word OK' }),
+      });
+      const data = await res.json();
+      setDiagnosticResult({
+        ...data,
+        httpStatus: res.status,
+      });
+      showToast(res.ok ? 'Diagnostic complete: OK' : 'Diagnostic completed with error');
+    } catch (err: unknown) {
+      const error = err as { message?: string };
+      setDiagnosticResult({
+        modelUsed: overrideModel || 'current',
+        hasKey: true,
+        httpStatus: 0,
+        rawError: error?.message || String(err),
+        elapsedMs: 0,
+      });
+    } finally {
+      setIsTestingAI(false);
+    }
+  };
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
@@ -510,6 +548,151 @@ export default function App() {
                   0 quotes. Quotes layout scheduled for Phase 5.
                 </div>
               </section>
+
+              {/* TASK 2C: Temporary Test AI Diagnosis Button & Display */}
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => runTestAI()}
+                  disabled={isTestingAI}
+                  className="w-full py-3 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-yellow-400 font-bold text-xs border border-yellow-400/40 flex items-center justify-center gap-2 shadow-sm cursor-pointer transition-all active:scale-[0.98]"
+                >
+                  {isTestingAI ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-yellow-400" />
+                      <span>Diagnosing AI Connection...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4 text-yellow-400 fill-current" />
+                      <span>Test AI (Diagnose Connection & Benchmark Models)</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Diagnostic Results Card */}
+              {diagnosticResult && (
+                <div className="bg-slate-900 text-white p-4 rounded-2xl border border-yellow-400/40 shadow-xl space-y-3 font-mono text-xs animate-fade-in">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                    <span className="font-bold text-yellow-400 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5" /> AI Diagnostic Results
+                    </span>
+                    <button
+                      onClick={() => setDiagnosticResult(null)}
+                      className="text-slate-400 hover:text-white"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="space-y-1.5 text-[11px]">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Model ID Used:</span>
+                      <span className="font-bold text-yellow-300">{diagnosticResult.modelUsed}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">API Key Configured:</span>
+                      <span
+                        className={
+                          diagnosticResult.hasKey
+                            ? 'text-emerald-400 font-bold'
+                            : 'text-rose-400 font-bold'
+                        }
+                      >
+                        {diagnosticResult.hasKey ? 'Yes (Injected by AI Studio)' : 'No (Missing)'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">HTTP Status:</span>
+                      <span
+                        className={`font-bold ${
+                          diagnosticResult.httpStatus === 200
+                            ? 'text-emerald-400'
+                            : 'text-rose-400'
+                        }`}
+                      >
+                        {diagnosticResult.httpStatus}{' '}
+                        {diagnosticResult.httpStatus === 200 ? 'OK' : 'Error'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Response / Output:</span>
+                      <span className="font-bold text-white">
+                        {diagnosticResult.resultText || '(none)'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Elapsed Time:</span>
+                      <span className="font-bold text-cyan-300">
+                        {diagnosticResult.elapsedMs}ms
+                      </span>
+                    </div>
+                  </div>
+
+                  {diagnosticResult.rawError && (
+                    <div className="p-2.5 rounded-xl bg-rose-950/80 border border-rose-700 text-rose-200 text-[10px] break-all">
+                      <span className="font-bold uppercase block mb-1">Raw Error Body:</span>
+                      {typeof diagnosticResult.rawError === 'object'
+                        ? JSON.stringify(diagnosticResult.rawError, null, 2)
+                        : diagnosticResult.rawError}
+                    </div>
+                  )}
+
+                  {/* Benchmark 3 Flash-class models */}
+                  {diagnosticResult.benchmarks && (
+                    <div className="pt-2 border-t border-slate-800 space-y-2">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                        Flash-Class Models Benchmark ("Reply with OK", 10s max):
+                      </span>
+                      <div className="space-y-1.5">
+                        {diagnosticResult.benchmarks.map((b: any) => (
+                          <div
+                            key={b.model}
+                            className={`p-2 rounded-xl border flex items-center justify-between gap-2 ${
+                              b.status === 'ok'
+                                ? 'bg-slate-800/80 border-slate-700'
+                                : 'bg-rose-950/40 border-rose-900/60'
+                            }`}
+                          >
+                            <div>
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-bold text-white text-[11px]">{b.model}</span>
+                                {b.model === diagnosticResult.modelUsed && (
+                                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-yellow-400 text-slate-950 font-black">
+                                    CURRENT
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-[10px] text-slate-400">
+                                {b.status === 'ok' ? `Output: "${b.output}"` : `Error: ${b.error}`}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`text-[11px] font-bold ${
+                                  b.status === 'ok' ? 'text-emerald-400' : 'text-rose-400'
+                                }`}
+                              >
+                                {b.elapsedMs}ms
+                              </span>
+                              {b.status === 'ok' && b.model !== diagnosticResult.modelUsed && (
+                                <button
+                                  type="button"
+                                  onClick={() => runTestAI(b.model)}
+                                  className="px-2 py-1 rounded bg-yellow-400 hover:bg-yellow-300 text-slate-950 font-bold text-[10px] cursor-pointer"
+                                >
+                                  Switch & Test
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </main>
           </div>
         )}
@@ -587,6 +770,54 @@ export default function App() {
   );
 }
 
+// Helper to resize images in browser (max 1600px longest side, JPEG quality 0.8)
+function resizeImageFile(file: File): Promise<{ base64: string; mimeType: string }> {
+  const start = Date.now();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = (err) => {
+      console.error('[Client] FileReader error:', err);
+      reject(new Error(`Failed to read file "${file.name}"`));
+    };
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onerror = () => {
+        reject(new Error(`Failed to load image "${file.name}" for resizing`));
+      };
+      img.onload = () => {
+        const MAX_DIM = 1600;
+        let width = img.width;
+        let height = img.height;
+        if (width > MAX_DIM || height > MAX_DIM) {
+          if (width > height) {
+            height = Math.round((height * MAX_DIM) / width);
+            width = MAX_DIM;
+          } else {
+            width = Math.round((width * MAX_DIM) / height);
+            height = MAX_DIM;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          return resolve({ base64: e.target?.result as string, mimeType: file.type || 'image/jpeg' });
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        const compressedBase64 = canvas.toDataURL('image/jpeg', 0.8);
+        const durationMs = Date.now() - start;
+        console.log(
+          `[Client] Resized "${file.name}" from ${img.width}x${img.height} to ${width}x${height} in ${durationMs}ms (Base64 size: ${(compressedBase64.length / 1024).toFixed(1)} KB)`
+        );
+        resolve({ base64: compressedBase64, mimeType: 'image/jpeg' });
+      };
+      img.src = e.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 // ==========================================
 // TASK 2: UNIVERSAL AI INPUT BAR
 // (Available on Dashboard and Client Page)
@@ -604,6 +835,7 @@ function AIInputBar({
   const [audioData, setAudioData] = useState<{ mimeType: string; base64: string } | null>(null);
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [processingElapsed, setProcessingElapsed] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -619,10 +851,27 @@ function AIInputBar({
     };
   }, []);
 
-  // Audio Recording (Raw audio directly to Gemini, no browser speech-to-text)
+  // Track processing elapsed seconds for clear user feedback
+  useEffect(() => {
+    let pTimer: NodeJS.Timeout | null = null;
+    if (isProcessing) {
+      setProcessingElapsed(0);
+      pTimer = setInterval(() => {
+        setProcessingElapsed((s) => s + 1);
+      }, 1000);
+    } else {
+      setProcessingElapsed(0);
+    }
+    return () => {
+      if (pTimer) clearInterval(pTimer);
+    };
+  }, [isProcessing]);
+
+  // Audio Recording (Raw audio directly to Gemini, no browser speech-to-text, up to 3 mins)
   const startRecording = async () => {
     try {
       setErrorMessage(null);
+      console.log('[Client] Requesting microphone via getUserMedia...');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       audioChunksRef.current = [];
 
@@ -650,6 +899,7 @@ function AIInputBar({
         const reader = new FileReader();
         reader.onloadend = () => {
           const base64Audio = reader.result as string;
+          console.log(`[Client] Audio recorded: ${(base64Audio.length / 1024).toFixed(1)} KB (${mimeType})`);
           setAudioData({
             mimeType,
             base64: base64Audio,
@@ -665,11 +915,28 @@ function AIInputBar({
       setIsRecording(true);
       setRecordingSeconds(0);
       timerRef.current = setInterval(() => {
-        setRecordingSeconds((sec) => sec + 1);
+        setRecordingSeconds((sec) => {
+          if (sec >= 179) {
+            // Reached 3-minute max limit
+            console.log('[Client] Reached 3-minute recording limit (180s). Auto-stopping.');
+            setTimeout(() => stopRecording(), 0);
+            return 180;
+          }
+          return sec + 1;
+        });
       }, 1000);
     } catch (err: unknown) {
-      console.error('Microphone error:', err);
-      setErrorMessage('Microphone access denied or unavailable. You can still type notes or add images.');
+      const error = err as { name?: string; message?: string };
+      console.error('[TradePay Mic Error]', error?.name, error?.message, err);
+      if (error?.name === 'NotAllowedError' || error?.name === 'PermissionDeniedError') {
+        setErrorMessage(
+          'Microphone permission blocked (NotAllowedError). Please allow microphone access in your browser or iframe.'
+        );
+      } else if (error?.name === 'NotFoundError') {
+        setErrorMessage('No microphone device found on this system (NotFoundError).');
+      } else {
+        setErrorMessage(`Microphone error: ${error?.name || 'Unknown'} - ${error?.message || 'Access unavailable'}`);
+      }
     }
   };
 
@@ -684,8 +951,8 @@ function AIInputBar({
     }
   };
 
-  // Image Upload Handling (Up to 5 images)
-  const handleImageFiles = (files: FileList | null) => {
+  // Image Upload Handling (Up to 5 images, resized before sending: max 1600px, 0.8 quality)
+  const handleImageFiles = async (files: FileList | null) => {
     if (!files) return;
     const remainingSlots = 5 - images.length;
     if (remainingSlots <= 0) {
@@ -695,9 +962,8 @@ function AIInputBar({
 
     const filesToLoad = Array.from(files).slice(0, remainingSlots);
     for (const file of filesToLoad) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64 = reader.result as string;
+      try {
+        const resized = await resizeImageFile(file);
         setImages((prev) => {
           if (prev.length >= 5) return prev;
           return [
@@ -705,14 +971,16 @@ function AIInputBar({
             {
               id: 'img_' + Math.random().toString(36).substring(2, 7),
               name: file.name,
-              mimeType: file.type || 'image/jpeg',
-              base64,
-              previewUrl: URL.createObjectURL(file),
+              mimeType: resized.mimeType,
+              base64: resized.base64,
+              previewUrl: resized.base64,
             },
           ];
         });
-      };
-      reader.readAsDataURL(file);
+      } catch (err: unknown) {
+        console.error('[Client] Image resize error:', err);
+        setErrorMessage(`Failed to process image "${file.name}".`);
+      }
     }
   };
 
@@ -725,7 +993,7 @@ function AIInputBar({
     setRecordingSeconds(0);
   };
 
-  // Send raw audio and images directly to Gemini
+  // Send raw audio and images directly to Gemini with 30s timeout
   const handleProcess = async () => {
     if (!textInput.trim() && !audioData && images.length === 0) {
       setErrorMessage('Please record audio, upload a receipt/image, or type a note first.');
@@ -735,6 +1003,12 @@ function AIInputBar({
     setIsProcessing(true);
     setErrorMessage(null);
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, 30000);
+
+    const clientStart = Date.now();
     try {
       const payload = {
         audio: audioData,
@@ -746,17 +1020,28 @@ function AIInputBar({
         pageContext,
       };
 
+      console.log(
+        `[Client] Dispatching parse request (Text length: ${textInput.length}, Audio: ${Boolean(audioData)}, Images: ${images.length})`
+      );
+
       const response = await fetch('/api/ai/parse-invoice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
+      const clientRoundtrip = Date.now() - clientStart;
+      console.log(`[Client] Network fetch finished in ${clientRoundtrip}ms`);
 
       const result = await response.json();
 
       if (!response.ok || !result.success) {
-        throw new Error(result.error || 'Failed to analyze invoice data.');
+        throw new Error(result.error || `Server responded with status ${response.status}`);
       }
+
+      console.log('[Client] AI extraction successful:', result.timing);
 
       // Success: notify parent with extracted JSON
       onSuccess(result.data);
@@ -766,13 +1051,19 @@ function AIInputBar({
       setAudioData(null);
       setImages([]);
     } catch (err: unknown) {
-      const error = err as { message?: string };
-      console.error('AI processing error:', err);
-      // Preserve inputs so user can retry
-      setErrorMessage(
-        error.message ||
-          'Failed to connect to Gemini. Your inputs have been kept safe — please check your connection or API key and retry.'
-      );
+      clearTimeout(timeoutId);
+      const error = err as { name?: string; message?: string };
+      console.error('[Client] AI processing error:', error);
+      if (error?.name === 'AbortError') {
+        setErrorMessage(
+          'Processing timed out after 30 seconds. Your inputs have been kept safe — please check your network and try again.'
+        );
+      } else {
+        setErrorMessage(
+          error?.message ||
+            'Failed to connect to Gemini. Your inputs have been kept safe — please check your connection and retry.'
+        );
+      }
     } finally {
       setIsProcessing(false);
     }
@@ -819,6 +1110,24 @@ function AIInputBar({
           >
             <X className="w-3.5 h-3.5" />
           </button>
+        </div>
+      )}
+
+      {/* Clear Live Processing State Banner */}
+      {isProcessing && (
+        <div className="mb-2.5 p-3 rounded-xl bg-yellow-400/15 border border-yellow-400/40 text-yellow-200 text-xs flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <Loader2 className="w-4 h-4 text-yellow-400 animate-spin shrink-0" />
+            <div>
+              <p className="font-bold text-yellow-300">Processing with Gemini AI...</p>
+              <p className="text-[10px] text-yellow-400/80">
+                Extracting items from notes & receipts ({processingElapsed}s / 30s max)
+              </p>
+            </div>
+          </div>
+          <span className="text-[11px] font-mono text-yellow-300 font-bold px-2 py-0.5 rounded bg-black/40">
+            {processingElapsed}s
+          </span>
         </div>
       )}
 

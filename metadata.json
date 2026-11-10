@@ -1,6 +1,9 @@
 {
   "name": "TradePay - UK Trades Invoicing",
   "description": "Mobile-first invoicing and quoting app for UK tradespeople with integer pence calculations.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
