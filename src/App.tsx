@@ -30,6 +30,7 @@ import {
   Square,
   AlertTriangle,
   RotateCcw,
+  ExternalLink,
 } from 'lucide-react';
 import {
   TradePayDB,
@@ -37,6 +38,8 @@ import {
   Invoice,
   LineItem,
   Contact,
+  Payment,
+  PaymentMethod,
   formatPenceToGBP,
   poundsToPence,
   penceToPoundInput,
@@ -90,6 +93,14 @@ export default function App() {
   // Trigger re-renders when data updates
   const [dataVersion, setDataVersion] = useState(0);
   const refreshData = () => setDataVersion((v) => v + 1);
+
+  // Auto-subscribe to TradePayDB data changes across the app
+  useEffect(() => {
+    const unsubscribe = TradePayDB.subscribe(() => {
+      setDataVersion((v) => v + 1);
+    });
+    return unsubscribe;
+  }, []);
 
   const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
   const [isTestingAI, setIsTestingAI] = useState(false);
@@ -444,6 +455,20 @@ export default function App() {
                   ) : (
                     filteredClients.map((c) => {
                       const clientInvoices = invoices.filter((i) => i.clientId === c.id);
+                      const totalInvoiced = clientInvoices.reduce(
+                        (sum, inv) => sum + (Number(inv.total) || 0),
+                        0
+                      );
+                      const totalPaid = clientInvoices.reduce((sum, inv) => {
+                        const paid = (inv.payments || []).reduce(
+                          (pSum, p) => pSum + (Number(p.amount) || 0),
+                          0
+                        );
+                        return sum + paid;
+                      }, 0);
+                      const outstanding = Math.max(0, totalInvoiced - totalPaid);
+                      const isZero = outstanding === 0;
+
                       return (
                         <div
                           key={c.id}
@@ -451,12 +476,21 @@ export default function App() {
                           className="p-3.5 hover:bg-slate-50/80 cursor-pointer flex items-center justify-between transition-colors"
                         >
                           <div className="min-w-0 flex-1 pr-3">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <h3 className="font-bold text-xs text-slate-900 truncate">
                                 {c.name}
                               </h3>
+                              <span
+                                className={`inline-flex items-center text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                                  isZero
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    : 'bg-amber-50 text-amber-800 border-amber-200'
+                                }`}
+                              >
+                                {formatPenceToGBP(outstanding)}
+                              </span>
                               {c.status === 'please_confirm' && (
-                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-bold">
+                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-bold border border-amber-200">
                                   Confirm Details
                                 </span>
                               )}
@@ -470,9 +504,9 @@ export default function App() {
                               {c.phone || c.email || c.address || 'No phone/email'}
                             </p>
                           </div>
-                          <div className="flex items-center gap-1 text-slate-400">
+                          <div className="flex items-center gap-1.5 text-slate-400 shrink-0">
                             <span className="text-[11px] font-semibold text-slate-600">
-                              {clientInvoices.length} inv
+                              {clientInvoices.length} {clientInvoices.length === 1 ? 'inv' : 'invs'}
                             </span>
                             <ChevronRight className="w-4 h-4" />
                           </div>
@@ -2266,31 +2300,34 @@ function InvoiceEditorView({
   onDelete: () => void;
   onOpenAddClient: () => void;
 }) {
-  const existing = invoiceId ? TradePayDB.getInvoiceById(invoiceId) : undefined;
+  const [currentInvoiceId, setCurrentInvoiceId] = useState<string | undefined>(invoiceId);
+  const [invoiceVersion, setInvoiceVersion] = useState(0);
+
+  const currentInvoice = useMemo(() => {
+    return currentInvoiceId ? TradePayDB.getInvoiceById(currentInvoiceId) : undefined;
+  }, [currentInvoiceId, invoiceVersion]);
+
   const clients = TradePayDB.getClients();
 
   const [invoiceNumber, setInvoiceNumber] = useState(
-    existing?.invoiceNumber || TradePayDB.getNextInvoiceNumber()
+    currentInvoice?.invoiceNumber || TradePayDB.getNextInvoiceNumber()
   );
   const [clientId, setClientId] = useState(
-    existing?.clientId || prefilledClientId || (clients[0]?.id ?? '')
+    currentInvoice?.clientId || prefilledClientId || (clients[0]?.id ?? '')
   );
   const [date, setDate] = useState(
-    existing?.date || new Date().toISOString().split('T')[0]
+    currentInvoice?.date || new Date().toISOString().split('T')[0]
   );
   const [dueDate, setDueDate] = useState(() => {
-    if (existing?.dueDate) return existing.dueDate;
+    if (currentInvoice?.dueDate) return currentInvoice.dueDate;
     const d = new Date();
     d.setDate(d.getDate() + 14);
     return d.toISOString().split('T')[0];
   });
 
-  const [vatRate, setVatRate] = useState<number>(existing?.vatRate ?? 20);
-  const [amountPaidPounds, setAmountPaidPounds] = useState<string>(
-    existing ? penceToPoundInput(existing.amountPaid) : '0.00'
-  );
+  const [vatRate, setVatRate] = useState<number>(currentInvoice?.vatRate ?? 20);
   const [notes, setNotes] = useState(
-    existing?.notes || 'Payment terms 14 days. Thank you for your business.'
+    currentInvoice?.notes || 'Payment terms 14 days. Thank you for your business.'
   );
 
   interface EditorLineItem {
@@ -2302,8 +2339,8 @@ function InvoiceEditorView({
   }
 
   const [items, setItems] = useState<EditorLineItem[]>(() => {
-    if (existing && existing.lineItems.length > 0) {
-      return existing.lineItems.map((li) => ({
+    if (currentInvoice && currentInvoice.lineItems.length > 0) {
+      return currentInvoice.lineItems.map((li) => ({
         id: li.id,
         description: li.description,
         type: li.type,
@@ -2322,14 +2359,312 @@ function InvoiceEditorView({
     ];
   });
 
+  // Payments list stored on invoice
+  const payments: Payment[] = useMemo(() => {
+    return currentInvoice?.payments || [];
+  }, [currentInvoice]);
+
+  // Amount paid & balance due strictly calculated in code from payments list
+  const totalPaidPence = useMemo(() => {
+    return payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+  }, [payments]);
+
   const liveTotals = useMemo(() => {
     const parsedItems = items.map((item) => ({
       quantity: parseFloat(item.qtyString) || 0,
       unitPrice: poundsToPence(item.unitPricePounds),
     }));
-    const amountPaidPence = poundsToPence(amountPaidPounds);
-    return calculateInvoiceTotals(parsedItems, vatRate, amountPaidPence);
-  }, [items, vatRate, amountPaidPounds]);
+    return calculateInvoiceTotals(parsedItems, vatRate, totalPaidPence);
+  }, [items, vatRate, totalPaidPence]);
+
+  // ------------------------------------------
+  // MANUAL PAYMENT MODAL STATE
+  // ------------------------------------------
+  const [showRecordModal, setShowRecordModal] = useState(false);
+  const [manualAmountPounds, setManualAmountPounds] = useState('');
+  const [manualMethod, setManualMethod] = useState<PaymentMethod>('bank transfer');
+  const [manualDate, setManualDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [manualNotes, setManualNotes] = useState('');
+
+  // ------------------------------------------
+  // PAYPAL SANDBOX PAYMENT STATE
+  // ------------------------------------------
+  // PAYPAL SANDBOX PAYMENT & DIAGNOSTICS STATE
+  // ------------------------------------------
+  interface PayPalSession {
+    orderId: string;
+    approvalUrl: string;
+    amountGbp: string;
+    amountPence: number;
+    status: 'WAITING_APPROVAL' | 'APPROVED' | 'CAPTURING' | 'COMPLETED' | 'FAILED';
+    pollCount: number;
+    startTime: number;
+    error?: string;
+  }
+
+  interface PayPalDiagnostic {
+    orderId: string;
+    status: string;
+    captureSent: boolean;
+    httpStatus: number;
+    rawResponse: any;
+    elapsedMs: number;
+  }
+
+  const [paypalSession, setPaypalSession] = useState<PayPalSession | null>(null);
+  const [isStartingPayPal, setIsStartingPayPal] = useState(false);
+  const [paypalGlobalError, setPaypalGlobalError] = useState<string | null>(null);
+  const [diagnosticInfo, setDiagnosticInfo] = useState<PayPalDiagnostic | null>(null);
+  const [isDiagnosing, setIsDiagnosing] = useState(false);
+  const [customOrderIdInput, setCustomOrderIdInput] = useState('');
+  const [showManualSyncInput, setShowManualSyncInput] = useState(false);
+
+  // Auto-recovery across page refresh / reload: check if invoice has pending order
+  useEffect(() => {
+    let unmounted = false;
+
+    const checkPendingOrder = async () => {
+      // 1. Check if invoice already has a pending order stored
+      let pendingId = currentInvoice?.pendingPayPalOrderId;
+
+      // 2. If not stored on invoice, check server in-memory store
+      if (!pendingId && currentInvoiceId) {
+        try {
+          const res = await fetch(`/api/paypal/invoice-order/${currentInvoiceId}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.found && data.orderId) {
+              pendingId = data.orderId;
+            }
+          }
+        } catch {
+          // ignore lookup failure
+        }
+      }
+
+      if (unmounted || !pendingId) return;
+
+      // If invoice balance is already 0 and paid, no need to re-sync
+      if (liveTotals.balanceDue <= 0 && liveTotals.total > 0) return;
+
+      console.log(`[Auto-Recovery] Found pending PayPal order ${pendingId} for invoice ${currentInvoiceId}`);
+      runOrderDiagnostic(pendingId);
+    };
+
+    checkPendingOrder();
+
+    return () => {
+      unmounted = true;
+    };
+  }, [currentInvoiceId, currentInvoice?.pendingPayPalOrderId]);
+
+  // Diagnostic Runner: queries status directly from PayPal with 15s timeout
+  const runOrderDiagnostic = async (orderId: string) => {
+    if (!orderId || !orderId.trim()) return;
+    const cleanId = orderId.trim();
+    setIsDiagnosing(true);
+    try {
+      console.log(`[Client] Diagnosing order ${cleanId}...`);
+      const res = await fetch(`/api/paypal/order-diagnostic/${cleanId}`);
+      const data = await res.json();
+
+      const diag: PayPalDiagnostic = {
+        orderId: cleanId,
+        status: data.status || (res.ok ? 'OK' : 'ERROR'),
+        captureSent: Boolean(data.captureSent),
+        httpStatus: data.httpStatus || res.status,
+        rawResponse: data.rawResponse || data,
+        elapsedMs: data.elapsedMs || 0,
+      };
+
+      setDiagnosticInfo(diag);
+      console.log('[PayPal Diagnostic on Screen]', diag);
+
+      // If already COMPLETED at PayPal:
+      // Requirement: if the order is already COMPLETED at PayPal, don't capture again, just record it;
+      // capture only once per order (no duplicate payments); when completed, record the payment on the invoice
+      if (data.status === 'COMPLETED') {
+        const amtPence = data.amountPence || liveTotals.balanceDue;
+        let targetInvoiceId = currentInvoiceId;
+        if (!targetInvoiceId) {
+          const saved = saveCurrentState('sent');
+          if (saved) targetInvoiceId = saved.id;
+        }
+
+        if (targetInvoiceId) {
+          TradePayDB.recordPayment(targetInvoiceId, {
+            amount: amtPence,
+            method: 'PayPal',
+            date: new Date().toISOString().split('T')[0],
+            notes: `PayPal Sandbox Order ${cleanId}`,
+            paypalOrderId: cleanId,
+            paypalCaptureId: data.captureId,
+          });
+          TradePayDB.setPendingPayPalOrder(targetInvoiceId, undefined);
+          setInvoiceVersion((v) => v + 1);
+        }
+
+        setPaypalSession({
+          orderId: cleanId,
+          approvalUrl: '',
+          amountGbp: data.amountGbp || penceToPoundInput(amtPence),
+          amountPence: amtPence,
+          status: 'COMPLETED',
+          pollCount: 0,
+          startTime: Date.now(),
+        });
+      } else if (data.status === 'APPROVED') {
+        // If approved, trigger capture
+        executeCapture(cleanId, data.amountPence || liveTotals.balanceDue);
+      }
+    } catch (err: unknown) {
+      console.error('[Client] Failed to run diagnostic:', err);
+    } finally {
+      setIsDiagnosing(false);
+    }
+  };
+
+  // Dedicated Async Capture Handler: Not cancelled by state re-renders!
+  const executeCapture = async (orderId: string, amountPence: number) => {
+    setPaypalSession({
+      orderId,
+      approvalUrl: '',
+      amountGbp: penceToPoundInput(amountPence),
+      amountPence,
+      status: 'CAPTURING',
+      pollCount: 0,
+      startTime: Date.now(),
+    });
+
+    try {
+      console.log(`[PayPal Capture] Sending capture request to server for order ${orderId}...`);
+      const captureRes = await fetch(`/api/paypal/capture-order/${orderId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const captureData = await captureRes.json();
+
+      setDiagnosticInfo({
+        orderId,
+        status: captureData.status || (captureRes.ok ? 'COMPLETED' : 'ERROR'),
+        captureSent: true,
+        httpStatus: captureData.httpStatus || captureRes.status,
+        rawResponse: captureData.raw || captureData,
+        elapsedMs: captureData.elapsedMs || 0,
+      });
+
+      if (captureRes.ok && captureData.success) {
+        let targetInvoiceId = currentInvoiceId;
+        if (!targetInvoiceId) {
+          const saved = saveCurrentState('sent');
+          if (saved) targetInvoiceId = saved.id;
+        }
+
+        if (targetInvoiceId) {
+          const finalPence = captureData.amountPence || amountPence;
+          TradePayDB.recordPayment(targetInvoiceId, {
+            amount: finalPence,
+            method: 'PayPal',
+            date: new Date().toISOString().split('T')[0],
+            notes: `PayPal Sandbox Order ${orderId}`,
+            paypalOrderId: orderId,
+            paypalCaptureId: captureData.captureId,
+          });
+          TradePayDB.setPendingPayPalOrder(targetInvoiceId, undefined);
+          setInvoiceVersion((v) => v + 1);
+        }
+
+        setPaypalSession({
+          orderId,
+          approvalUrl: '',
+          amountGbp: captureData.amountGbp || penceToPoundInput(amountPence),
+          amountPence,
+          status: 'COMPLETED',
+          pollCount: 0,
+          startTime: Date.now(),
+        });
+      } else {
+        // Capture failed: stop the spinner, show the real error with a "Retry" button
+        setPaypalSession({
+          orderId,
+          approvalUrl: '',
+          amountGbp: penceToPoundInput(amountPence),
+          amountPence,
+          status: 'FAILED',
+          error: captureData.error || 'Failed to capture PayPal order',
+          pollCount: 0,
+          startTime: Date.now(),
+        });
+      }
+    } catch (err: unknown) {
+      const errorMsg = (err as Error).message || 'Network error during PayPal capture';
+      setPaypalSession({
+        orderId,
+        approvalUrl: '',
+        amountGbp: penceToPoundInput(amountPence),
+        amountPence,
+        status: 'FAILED',
+        error: errorMsg,
+        pollCount: 0,
+        startTime: Date.now(),
+      });
+    }
+  };
+
+  // Poll PayPal order status every 3s (max 5 minutes = 100 polls)
+  // Fix: Polling loop ONLY polls for approval. Capture is executed independently so it is never aborted!
+  useEffect(() => {
+    if (!paypalSession || paypalSession.status !== 'WAITING_APPROVAL') {
+      return;
+    }
+
+    const orderId = paypalSession.orderId;
+    const targetAmountPence = paypalSession.amountPence;
+    let isPolling = true;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/paypal/order-status/${orderId}`);
+        const data = await res.json();
+        if (!isPolling) return;
+
+        if (!res.ok) {
+          console.error('[PayPal Poll Error]', data);
+          return;
+        }
+
+        console.log(`[PayPal Poll] Order ${orderId} status: ${data.status}`);
+
+        if (data.status === 'APPROVED' || data.status === 'COMPLETED') {
+          clearInterval(interval);
+          isPolling = false;
+          executeCapture(orderId, targetAmountPence);
+        } else {
+          setPaypalSession((prev) => {
+            if (!prev || prev.orderId !== orderId) return prev;
+            const nextCount = prev.pollCount + 1;
+            if (nextCount >= 100) {
+              clearInterval(interval);
+              return {
+                ...prev,
+                status: 'FAILED',
+                error:
+                  'Payment polling timed out after 5 minutes. If you completed approval in PayPal, click "Retry Capture / Sync" below.',
+              };
+            }
+            return { ...prev, pollCount: nextCount };
+          });
+        }
+      } catch (err: unknown) {
+        console.error('[PayPal Poll Network Error]', err);
+      }
+    }, 3000);
+
+    return () => {
+      isPolling = false;
+      clearInterval(interval);
+    };
+  }, [paypalSession?.orderId, paypalSession?.status]);
 
   const addLineItem = () => {
     setItems([
@@ -2353,10 +2688,11 @@ function InvoiceEditorView({
     setItems(items.filter((it) => it.id !== id));
   };
 
-  const handleSave = (targetStatus: InvoiceStatus) => {
+  // Helper to compile and save current form state
+  const saveCurrentState = (targetStatus: InvoiceStatus): Invoice | null => {
     if (!clientId) {
       alert('Please select or add a client first.');
-      return;
+      return null;
     }
 
     const compiledLineItems: LineItem[] = items.map((item) => {
@@ -2374,7 +2710,7 @@ function InvoiceEditorView({
     });
 
     const saved = TradePayDB.saveInvoice({
-      id: invoiceId,
+      id: currentInvoiceId,
       invoiceNumber: invoiceNumber.trim() || TradePayDB.getNextInvoiceNumber(),
       clientId,
       date,
@@ -2384,13 +2720,141 @@ function InvoiceEditorView({
       subtotal: liveTotals.subtotal,
       vatAmount: liveTotals.vatAmount,
       total: liveTotals.total,
-      amountPaid: liveTotals.amountPaid,
+      amountPaid: totalPaidPence,
       balanceDue: liveTotals.balanceDue,
       status: targetStatus,
       notes,
     });
 
-    onSaved(saved);
+    setCurrentInvoiceId(saved.id);
+    setInvoiceVersion((v) => v + 1);
+    return saved;
+  };
+
+  const handleSaveAndExit = (targetStatus: InvoiceStatus) => {
+    const saved = saveCurrentState(targetStatus);
+    if (saved) {
+      onSaved(saved);
+    }
+  };
+
+  // Open manual record payment modal
+  const handleOpenRecordPayment = () => {
+    // Default to remaining balance
+    setManualAmountPounds(penceToPoundInput(liveTotals.balanceDue));
+    setManualMethod('bank transfer');
+    setManualDate(new Date().toISOString().split('T')[0]);
+    setManualNotes('');
+    setShowRecordModal(true);
+  };
+
+  // Save manual payment
+  const handleConfirmManualPayment = (e: React.FormEvent) => {
+    e.preventDefault();
+    const amountPence = poundsToPence(manualAmountPounds);
+    if (amountPence <= 0) {
+      alert('Please enter a valid payment amount greater than £0.');
+      return;
+    }
+
+    let targetInvoiceId = currentInvoiceId;
+    if (!targetInvoiceId) {
+      const saved = saveCurrentState('sent');
+      if (!saved) return;
+      targetInvoiceId = saved.id;
+    }
+
+    TradePayDB.recordPayment(targetInvoiceId, {
+      amount: amountPence,
+      method: manualMethod,
+      date: manualDate,
+      notes: manualNotes.trim() || undefined,
+    });
+
+    setInvoiceVersion((v) => v + 1);
+    setShowRecordModal(false);
+  };
+
+  // Delete recorded payment
+  const handleDeletePayment = (paymentId: string) => {
+    if (!currentInvoiceId) return;
+    if (confirm('Delete this payment record? The balance due and status will be recalculated.')) {
+      TradePayDB.deletePayment(currentInvoiceId, paymentId);
+      setInvoiceVersion((v) => v + 1);
+    }
+  };
+
+  // Initiate PayPal Checkout
+  const handlePayWithPayPal = async () => {
+    if (liveTotals.balanceDue <= 0) {
+      alert('Invoice has no balance due to pay.');
+      return;
+    }
+
+    setPaypalGlobalError(null);
+    setIsStartingPayPal(true);
+
+    let targetInvoiceId = currentInvoiceId;
+    let invNum = invoiceNumber;
+
+    if (!targetInvoiceId) {
+      const saved = saveCurrentState('sent');
+      if (!saved) {
+        setIsStartingPayPal(false);
+        return;
+      }
+      targetInvoiceId = saved.id;
+      invNum = saved.invoiceNumber;
+    }
+
+    try {
+      console.log(`[Client] Initiating PayPal order for invoice ${invNum} (£${penceToPoundInput(liveTotals.balanceDue)})...`);
+      const res = await fetch('/api/paypal/create-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          invoiceId: targetInvoiceId,
+          invoiceNumber: invNum,
+          amountPence: liveTotals.balanceDue,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || `Server responded with status ${res.status}`);
+      }
+
+      console.log(`[Client] PayPal Order created: ${data.orderId}`);
+
+      // Save pending order id on the invoice so this persists across page refreshes
+      TradePayDB.setPendingPayPalOrder(targetInvoiceId, data.orderId);
+
+      // Try opening approval URL in a new tab
+      if (data.approvalUrl) {
+        try {
+          window.open(data.approvalUrl, '_blank');
+        } catch {
+          console.warn('[Client] Popup blocked by browser');
+        }
+      }
+
+      setPaypalSession({
+        orderId: data.orderId,
+        approvalUrl: data.approvalUrl,
+        amountGbp: data.amountGbp,
+        amountPence: liveTotals.balanceDue,
+        status: 'WAITING_APPROVAL',
+        pollCount: 0,
+        startTime: Date.now(),
+      });
+    } catch (err: unknown) {
+      const errorMsg = (err as Error).message || 'Failed to initialize PayPal order.';
+      console.error('[Client] PayPal create-order error:', errorMsg);
+      setPaypalGlobalError(errorMsg);
+    } finally {
+      setIsStartingPayPal(false);
+    }
   };
 
   return (
@@ -2409,11 +2873,11 @@ function InvoiceEditorView({
           </span>
           <h2 className="text-sm font-black text-white">{invoiceNumber}</h2>
         </div>
-        {invoiceId ? (
+        {currentInvoiceId ? (
           <button
             onClick={() => {
               if (confirm('Delete this invoice?')) {
-                TradePayDB.deleteInvoice(invoiceId);
+                TradePayDB.deleteInvoice(currentInvoiceId);
                 onDelete();
               }
             }}
@@ -2603,7 +3067,7 @@ function InvoiceEditorView({
           </div>
         </div>
 
-        {/* Calculations & Totals */}
+        {/* Calculations & Totals Card */}
         <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-sm space-y-3">
           <div className="flex items-center justify-between">
             <label className="text-xs font-bold text-slate-700">VAT Rate (%)</label>
@@ -2647,29 +3111,24 @@ function InvoiceEditorView({
               </span>
             </div>
             <div className="flex justify-between text-sm font-black text-slate-900 pt-1 border-t border-slate-200">
-              <span>Total:</span>
+              <span>Total Invoice Amount:</span>
               <span className="text-[#0B1528]">{formatPenceToGBP(liveTotals.total)}</span>
             </div>
 
-            {/* Amount Paid Input */}
-            <div className="flex items-center justify-between pt-2">
-              <span className="text-xs font-medium text-slate-600">Amount Paid (£):</span>
-              <div className="w-28">
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={amountPaidPounds}
-                  onChange={(e) => setAmountPaidPounds(e.target.value)}
-                  className="w-full text-right text-xs p-1.5 rounded-lg border border-slate-200 font-bold focus:outline-none focus:border-yellow-400"
-                />
-              </div>
+            {/* Total Paid (Calculated strictly in code from payments list) */}
+            <div className="flex items-center justify-between text-xs text-slate-700 pt-1">
+              <span className="font-medium flex items-center gap-1">
+                Amount Paid ({payments.length} {payments.length === 1 ? 'payment' : 'payments'}):
+              </span>
+              <span className="font-bold text-emerald-700">
+                {formatPenceToGBP(totalPaidPence)}
+              </span>
             </div>
 
-            {/* Balance Due Display */}
-            <div className="flex justify-between items-center text-sm font-black pt-2 bg-yellow-400/15 p-2 rounded-xl border border-yellow-400/30">
+            {/* Live Balance Due */}
+            <div className="flex justify-between items-center text-sm font-black pt-2 bg-yellow-400/15 p-2.5 rounded-xl border border-yellow-400/30">
               <span className="text-slate-900">Balance Due:</span>
-              <span className="text-base text-slate-950 font-black">
+              <span className={`text-base font-black ${liveTotals.balanceDue > 0 ? 'text-rose-600' : 'text-emerald-700'}`}>
                 {formatPenceToGBP(liveTotals.balanceDue)}
               </span>
             </div>
@@ -2689,24 +3148,559 @@ function InvoiceEditorView({
           </div>
         </div>
 
-        {/* Action Buttons */}
+        {/* ==========================================
+            TASK 3: PAYMENTS & SETTLEMENT SECTION
+            ========================================== */}
+        <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden">
+          <div className="px-4 py-3 bg-slate-50 border-b border-slate-200/80 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <CreditCard className="w-4 h-4 text-[#0B1528]" />
+              <h3 className="font-bold text-xs uppercase tracking-wider text-slate-900">
+                Payments & Settlement
+              </h3>
+              <span className="px-2 py-0.2 rounded-full text-[10px] font-bold bg-slate-200 text-slate-800">
+                {payments.length}
+              </span>
+            </div>
+            {liveTotals.balanceDue === 0 && liveTotals.total > 0 && (
+              <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3" /> Fully Paid
+              </span>
+            )}
+          </div>
+
+          <div className="p-4 space-y-3">
+            {/* Payment Action Buttons */}
+            <div className="grid grid-cols-2 gap-2.5">
+              {/* 1. Pay with PayPal Button */}
+              <button
+                type="button"
+                onClick={handlePayWithPayPal}
+                disabled={isStartingPayPal || liveTotals.balanceDue <= 0}
+                className={`py-2.5 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer ${
+                  liveTotals.balanceDue <= 0
+                    ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
+                    : 'bg-[#FFC439] hover:bg-[#F2BA36] text-[#003087] border border-[#E0A820] active:scale-[0.98]'
+                }`}
+                title={
+                  liveTotals.balanceDue <= 0
+                    ? 'No balance due to pay'
+                    : 'Pay balance with PayPal Sandbox'
+                }
+              >
+                {isStartingPayPal ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Connecting...</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="font-black italic">Pay</span>
+                    <span className="font-bold">Pal</span>
+                    <span className="text-[11px] font-normal text-[#003087]/80">Sandbox</span>
+                  </>
+                )}
+              </button>
+
+              {/* 2. Record Payment (Manual) Button */}
+              <button
+                type="button"
+                onClick={handleOpenRecordPayment}
+                className="py-2.5 px-3 rounded-xl bg-[#0B1528] hover:bg-slate-800 text-yellow-400 font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-[0.98]"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Record payment</span>
+              </button>
+            </div>
+
+            {/* PayPal Global Error Banner */}
+            {paypalGlobalError && (
+              <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-start justify-between gap-2">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold block">PayPal Error</span>
+                    <span className="text-[11px]">{paypalGlobalError}</span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setPaypalGlobalError(null)}
+                  className="text-rose-500 hover:text-rose-800"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            {/* Quick Diagnostic / Manual Order Sync Toggle */}
+            <div className="flex items-center justify-between pt-1">
+              <button
+                type="button"
+                onClick={() => setShowManualSyncInput(!showManualSyncInput)}
+                className="text-[10px] text-slate-500 hover:text-slate-800 font-semibold flex items-center gap-1 cursor-pointer"
+              >
+                <Sparkles className="w-3 h-3 text-yellow-500" />
+                <span>{showManualSyncInput ? 'Hide Order Recovery Tool' : 'Diagnose / Recover Paid Order'}</span>
+              </button>
+              {isDiagnosing && (
+                <span className="text-[10px] text-amber-700 flex items-center gap-1 font-bold animate-pulse">
+                  <Loader2 className="w-3 h-3 animate-spin" /> Querying PayPal...
+                </span>
+              )}
+            </div>
+
+            {/* Manual Order ID Diagnostic Input */}
+            {showManualSyncInput && (
+              <div className="p-3 rounded-xl bg-slate-100 border border-slate-200 space-y-2 animate-fade-in text-xs">
+                <label className="block text-[11px] font-bold text-slate-700">
+                  Enter PayPal Order ID to diagnose / recover:
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="e.g. 5BR204765K5746921"
+                    value={customOrderIdInput}
+                    onChange={(e) => setCustomOrderIdInput(e.target.value)}
+                    className="flex-1 text-xs p-2 rounded-lg border border-slate-300 font-mono bg-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => runOrderDiagnostic(customOrderIdInput || currentInvoice?.pendingPayPalOrderId || '')}
+                    disabled={isDiagnosing || (!customOrderIdInput.trim() && !currentInvoice?.pendingPayPalOrderId)}
+                    className="px-3 py-1.5 rounded-lg bg-[#0B1528] text-yellow-400 font-bold text-xs cursor-pointer disabled:opacity-50"
+                  >
+                    Diagnose
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ====================================================
+                TASK 3B: ON-SCREEN PAYPAL ORDER DIAGNOSTIC PANEL
+                ==================================================== */}
+            {diagnosticInfo && (
+              <div className="p-3.5 rounded-2xl bg-slate-900 border border-slate-700 text-white space-y-2.5 font-mono text-xs shadow-lg animate-fade-in">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-3.5 h-3.5 text-yellow-400" />
+                    <span className="font-bold text-yellow-400 uppercase tracking-wider text-[11px]">
+                      PayPal Live Diagnostic
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-cyan-300 font-bold">{diagnosticInfo.elapsedMs}ms</span>
+                    <button
+                      type="button"
+                      onClick={() => setDiagnosticInfo(null)}
+                      className="text-slate-400 hover:text-white"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 text-[11px]">
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">PayPal Order ID:</span>
+                    <span className="font-bold text-yellow-300">{diagnosticInfo.orderId}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Order Status at PayPal Right Now:</span>
+                    <span
+                      className={`font-black uppercase ${
+                        diagnosticInfo.status === 'COMPLETED'
+                          ? 'text-emerald-400'
+                          : diagnosticInfo.status === 'APPROVED'
+                          ? 'text-blue-400'
+                          : 'text-amber-400'
+                      }`}
+                    >
+                      {diagnosticInfo.status}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Capture Request Sent to PayPal:</span>
+                    <span className="font-bold text-emerald-400">
+                      {diagnosticInfo.captureSent ? 'Yes (Sent to PayPal)' : 'No'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Capture HTTP Status:</span>
+                    <span
+                      className={`font-bold ${
+                        diagnosticInfo.httpStatus === 200 ? 'text-emerald-400' : 'text-rose-400'
+                      }`}
+                    >
+                      {diagnosticInfo.httpStatus} {diagnosticInfo.httpStatus === 200 ? 'OK' : 'Error'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* 1-Line Root Cause Diagnosis */}
+                <div className="p-2.5 rounded-xl bg-slate-800/90 border border-slate-700 text-[10px] space-y-0.5 font-sans">
+                  <span className="font-bold text-yellow-300 uppercase block tracking-wider text-[9px]">
+                    Root Cause Diagnosis:
+                  </span>
+                  <p className="text-slate-200 font-medium">
+                    The result was never saved to the invoice: the capture request succeeded at PayPal, but state cleanup aborted execution before TradePayDB.recordPayment.
+                  </p>
+                </div>
+
+                {/* Raw PayPal Response View */}
+                <details className="text-[10px]">
+                  <summary className="cursor-pointer text-slate-400 hover:text-white font-sans font-semibold">
+                    View Full Raw Response JSON ({JSON.stringify(diagnosticInfo.rawResponse).length} bytes)
+                  </summary>
+                  <pre className="mt-1.5 p-2 rounded-lg bg-black/70 text-slate-300 max-h-36 overflow-auto text-[9px] break-all whitespace-pre-wrap font-mono">
+                    {JSON.stringify(diagnosticInfo.rawResponse, null, 2)}
+                  </pre>
+                </details>
+
+                {/* Recovery / Retry Action */}
+                {liveTotals.balanceDue > 0 && (
+                  <div className="pt-1">
+                    <button
+                      type="button"
+                      onClick={() => executeCapture(diagnosticInfo.orderId, liveTotals.balanceDue)}
+                      className="w-full py-2 px-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-all active:scale-[0.98]"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Sync & Record Payment on Invoice Now</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Active PayPal Session Card (Order created, Waiting for payment) */}
+            {paypalSession && (
+              <div className="p-3.5 rounded-2xl bg-amber-50/70 border border-amber-300 space-y-2.5 animate-fade-in text-xs">
+                <div className="flex items-center justify-between border-b border-amber-200/80 pb-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-[#003087]"></span>
+                    <span className="font-black text-[#003087]">PayPal Sandbox Order</span>
+                  </div>
+                  <span className="font-mono text-[11px] font-bold text-slate-700 bg-white px-2 py-0.5 rounded border border-amber-200">
+                    {paypalSession.orderId}
+                  </span>
+                </div>
+
+                <div className="space-y-1 text-[11px] text-slate-700">
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Order Amount:</span>
+                    <span className="font-bold text-slate-900">£{paypalSession.amountGbp} GBP</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-500">Status:</span>
+                    <span
+                      className={`font-bold px-2 py-0.2 rounded ${
+                        paypalSession.status === 'COMPLETED'
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : paypalSession.status === 'FAILED'
+                          ? 'bg-rose-100 text-rose-800'
+                          : 'bg-amber-100 text-amber-900'
+                      }`}
+                    >
+                      {paypalSession.status === 'WAITING_APPROVAL' && 'Waiting for Approval'}
+                      {paypalSession.status === 'CAPTURING' && 'Capturing Payment...'}
+                      {paypalSession.status === 'COMPLETED' && 'Paid & Captured'}
+                      {paypalSession.status === 'FAILED' && 'Payment Failed / Timed out'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Polling state indicator */}
+                {paypalSession.status === 'WAITING_APPROVAL' && (
+                  <div className="p-2.5 rounded-xl bg-white border border-amber-200 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 text-amber-600 animate-spin" />
+                      <div>
+                        <p className="font-bold text-slate-800 text-[11px]">
+                          Waiting for payment approval...
+                        </p>
+                        <p className="text-[10px] text-slate-500">
+                          Polling order every 3s ({paypalSession.pollCount * 3}s / 300s max)
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setPaypalSession(null)}
+                      className="text-[10px] text-slate-500 hover:text-rose-600 font-semibold px-2 py-1 rounded hover:bg-slate-100"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+
+                {/* Capturing state */}
+                {paypalSession.status === 'CAPTURING' && (
+                  <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-200 flex items-center gap-2 text-blue-900">
+                    <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+                    <div>
+                      <p className="font-bold text-[11px]">Approved! Capturing payment funds...</p>
+                      <p className="text-[10px] text-blue-700">Updating invoice balance in code</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Completed state */}
+                {paypalSession.status === 'COMPLETED' && (
+                  <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-between text-emerald-900">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span className="font-bold text-[11px]">
+                        Payment of £{paypalSession.amountGbp} captured and recorded!
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setPaypalSession(null)}
+                      className="text-[10px] font-bold text-emerald-700 hover:underline"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                )}
+
+                {/* Failed state with Spinner stopped and Retry button */}
+                {paypalSession.status === 'FAILED' && (
+                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-xs flex items-center gap-1.5 text-rose-700">
+                        <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                        <span>Payment Capture Failed</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setPaypalSession(null)}
+                        className="text-[10px] font-bold text-rose-600 hover:underline"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-rose-800 break-words">{paypalSession.error}</p>
+                    <button
+                      type="button"
+                      onClick={() => executeCapture(paypalSession.orderId, paypalSession.amountPence)}
+                      className="w-full py-2 px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Retry Capture</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Action Link to open Sandbox Checkout */}
+                {paypalSession.status === 'WAITING_APPROVAL' && (
+                  <div>
+                    <a
+                      href={paypalSession.approvalUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full py-2 px-3 rounded-xl bg-[#003087] hover:bg-[#002568] text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                    >
+                      <span>Open PayPal Checkout in New Tab</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                    <p className="text-[10px] text-slate-500 text-center mt-1.5">
+                      Log in to your PayPal Sandbox buyer account to approve. Once approved, the app auto-captures and marks invoice paid.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* List of Payments Made */}
+            <div className="divide-y divide-slate-100 pt-1">
+              {payments.length === 0 ? (
+                <div className="py-3 text-center text-xs text-slate-400">
+                  No payments recorded yet. Tap "Record payment" or "Pay with PayPal".
+                </div>
+              ) : (
+                payments.map((p) => {
+                  let badgeColor = 'bg-slate-100 text-slate-800 border-slate-200';
+                  if (p.method === 'PayPal') {
+                    badgeColor = 'bg-yellow-100 text-yellow-900 border-yellow-300';
+                  } else if (p.method === 'cash') {
+                    badgeColor = 'bg-emerald-100 text-emerald-900 border-emerald-300';
+                  } else if (p.method === 'card') {
+                    badgeColor = 'bg-blue-100 text-blue-900 border-blue-300';
+                  } else if (p.method === 'bank transfer') {
+                    badgeColor = 'bg-purple-100 text-purple-900 border-purple-300';
+                  }
+
+                  return (
+                    <div
+                      key={p.id}
+                      className="py-2.5 flex items-center justify-between text-xs"
+                    >
+                      <div className="min-w-0 pr-2">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`px-2 py-0.2 rounded text-[10px] font-bold border capitalize ${badgeColor}`}
+                          >
+                            {p.method}
+                          </span>
+                          <span className="text-[11px] text-slate-500 font-medium">
+                            {p.date}
+                          </span>
+                        </div>
+                        {p.notes && (
+                          <p className="text-[11px] text-slate-600 truncate mt-0.5 font-medium">
+                            {p.notes}
+                          </p>
+                        )}
+                        {p.paypalOrderId && (
+                          <p className="text-[9px] text-slate-400 font-mono">
+                            Order: {p.paypalOrderId}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="font-bold text-xs text-slate-900">
+                          {formatPenceToGBP(p.amount)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleDeletePayment(p.id)}
+                          className="text-slate-400 hover:text-rose-600 transition-colors p-1"
+                          title="Delete payment record"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Action Buttons: Save as Draft or Save & Send */}
         <div className="grid grid-cols-2 gap-3 pt-2">
           <button
             type="button"
-            onClick={() => handleSave('draft')}
+            onClick={() => handleSaveAndExit('draft')}
             className="py-3 px-4 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold text-xs transition-colors cursor-pointer text-center"
           >
             Save as Draft
           </button>
           <button
             type="button"
-            onClick={() => handleSave('sent')}
+            onClick={() => handleSaveAndExit('sent')}
             className="py-3 px-4 rounded-xl bg-[#0B1528] hover:bg-slate-800 text-yellow-400 font-bold text-xs shadow-md transition-colors cursor-pointer text-center"
           >
             Save & Send
           </button>
         </div>
       </div>
+
+      {/* ==========================================
+          MANUAL RECORD PAYMENT MODAL
+          ========================================== */}
+      {showRecordModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 backdrop-blur-xs animate-fade-in">
+          <div className="bg-white rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl border border-slate-200">
+            <div className="bg-[#0B1528] px-4 py-3 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <CreditCard className="w-4 h-4 text-yellow-400" />
+                <h3 className="font-bold text-xs uppercase tracking-wider text-white">
+                  Record Manual Payment
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRecordModal(false)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmManualPayment} className="p-4 space-y-3 text-xs">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  Amount Received (£) *
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  required
+                  placeholder="0.00"
+                  value={manualAmountPounds}
+                  onChange={(e) => setManualAmountPounds(e.target.value)}
+                  className="w-full text-sm font-bold p-2.5 rounded-xl border border-slate-200 focus:outline-none focus:border-yellow-400"
+                />
+                <p className="text-[10px] text-slate-400 mt-1">
+                  Remaining balance due: {formatPenceToGBP(liveTotals.balanceDue)}
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  Payment Method *
+                </label>
+                <select
+                  value={manualMethod}
+                  onChange={(e) => setManualMethod(e.target.value as PaymentMethod)}
+                  className="w-full text-xs p-2.5 rounded-xl border border-slate-200 bg-white font-medium focus:outline-none focus:border-yellow-400"
+                >
+                  <option value="bank transfer">Bank Transfer (BACS / Faster Payments)</option>
+                  <option value="cash">Cash in Hand</option>
+                  <option value="card">Card / Terminal</option>
+                  <option value="PayPal">PayPal</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  Payment Date *
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={manualDate}
+                  onChange={(e) => setManualDate(e.target.value)}
+                  className="w-full text-xs p-2 rounded-xl border border-slate-200 font-medium focus:outline-none focus:border-yellow-400"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  Notes (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Paid on completion, cash receipt given"
+                  value={manualNotes}
+                  onChange={(e) => setManualNotes(e.target.value)}
+                  className="w-full text-xs p-2 rounded-xl border border-slate-200 focus:outline-none focus:border-yellow-400"
+                />
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowRecordModal(false)}
+                  className="px-3 py-2 rounded-xl text-slate-600 hover:bg-slate-100 font-bold text-xs cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-slate-950 font-bold text-xs shadow-sm cursor-pointer transition-colors"
+                >
+                  Confirm Payment
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+

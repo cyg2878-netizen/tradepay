@@ -42,6 +42,430 @@ app.post('/api/ai/set-model', (req, res) => {
   res.json({ success: true, activeModel: ACTIVE_MODEL });
 });
 
+// ==========================================
+// PAYPAL SANDBOX INTEGRATION (SERVER-SIDE ONLY)
+// ==========================================
+const PAYPAL_API_BASE = 'https://api-m.sandbox.paypal.com';
+
+// In-memory store for invoice <-> order mapping to aid recovery across page refresh
+const invoiceOrdersMap = new Map<
+  string,
+  { orderId: string; invoiceId: string; invoiceNumber: string; amountPence: number; createdAt: string }
+>();
+
+// Helper: 15-second timeout on all PayPal requests
+async function fetchPayPalWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs = 15000
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    return res;
+  } catch (err: unknown) {
+    if ((err as Error)?.name === 'AbortError') {
+      throw new Error(`PayPal request timed out after ${timeoutMs / 1000}s (${url})`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getPayPalAccessToken(): Promise<string> {
+  const clientId = process.env.PAYPAL_CLIENT_ID;
+  const clientSecret = process.env.PAYPAL_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      'PayPal credentials missing: PAYPAL_CLIENT_ID or PAYPAL_CLIENT_SECRET is not configured in AI Studio Secrets.'
+    );
+  }
+
+  const auth = Buffer.from(`${clientId.trim()}:${clientSecret.trim()}`).toString('base64');
+  const res = await fetchPayPalWithTimeout(`${PAYPAL_API_BASE}/v1/oauth2/token`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${auth}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: 'grant_type=client_credentials',
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    const errorDetails = data.error_description || data.message || JSON.stringify(data);
+    throw new Error(`PayPal OAuth authentication failed (${res.status}): ${errorDetails}`);
+  }
+
+  return data.access_token;
+}
+
+// PayPal Config Check
+app.get('/api/paypal/config', (req, res) => {
+  const hasClientId = Boolean(process.env.PAYPAL_CLIENT_ID);
+  const hasSecret = Boolean(process.env.PAYPAL_CLIENT_SECRET);
+  res.json({
+    configured: hasClientId && hasSecret,
+    hasClientId,
+    hasSecret,
+    mode: 'sandbox',
+    baseUrl: PAYPAL_API_BASE,
+  });
+});
+
+// Lookup latest order created for an invoice
+app.get('/api/paypal/invoice-order/:invoiceId', (req, res) => {
+  const { invoiceId } = req.params;
+  const record = invoiceOrdersMap.get(invoiceId);
+  if (!record) {
+    return res.status(404).json({ found: false, error: 'No recent PayPal order found for this invoice.' });
+  }
+  return res.json({ found: true, ...record });
+});
+
+// Detailed Order Diagnostic (PayPal order status right now, capture status, raw response, elapsed ms)
+app.get('/api/paypal/order-diagnostic/:orderId', async (req, res) => {
+  const startMs = Date.now();
+  try {
+    const { orderId } = req.params;
+    const token = await getPayPalAccessToken();
+
+    console.log(`[server.ts] Diagnosing PayPal order ${orderId}...`);
+
+    const orderRes = await fetchPayPalWithTimeout(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    const orderData = await orderRes.json();
+    const elapsedMs = Date.now() - startMs;
+
+    if (!orderRes.ok) {
+      console.error(`[server.ts] PayPal order-diagnostic failed (${orderRes.status}) in ${elapsedMs}ms:`, orderData);
+      return res.status(orderRes.status).json({
+        success: false,
+        orderId,
+        httpStatus: orderRes.status,
+        elapsedMs,
+        error: orderData.message || `Failed to fetch order ${orderId}`,
+        rawResponse: orderData,
+      });
+    }
+
+    const captures = orderData.purchase_units?.[0]?.payments?.captures || [];
+    const captureSent = captures.length > 0 || orderData.status === 'COMPLETED';
+    const captureId = captures[0]?.id;
+    const amountVal = captures[0]?.amount?.value || orderData.purchase_units?.[0]?.amount?.value || '0.00';
+    const amountPence = Math.round(parseFloat(amountVal) * 100);
+
+    console.log(
+      `[server.ts] Diagnostic for ${orderId}: Status=${orderData.status}, CaptureSent=${captureSent}, HTTP=${orderRes.status}, Elapsed=${elapsedMs}ms`
+    );
+
+    return res.json({
+      success: true,
+      orderId,
+      status: orderData.status, // "CREATED", "APPROVED", "COMPLETED"
+      captureSent,
+      httpStatus: orderRes.status,
+      elapsedMs,
+      amountGbp: amountVal,
+      amountPence,
+      captureId,
+      captures,
+      rawResponse: orderData,
+    });
+  } catch (err: unknown) {
+    const elapsedMs = Date.now() - startMs;
+    console.error(`[server.ts] Error in /api/paypal/order-diagnostic in ${elapsedMs}ms:`, err);
+    return res.status(500).json({
+      success: false,
+      orderId: req.params.orderId,
+      httpStatus: 500,
+      elapsedMs,
+      error: (err as Error).message || 'Failed to diagnose PayPal order',
+    });
+  }
+});
+
+// Create PayPal Orders v2 Order
+app.post('/api/paypal/create-order', async (req, res) => {
+  try {
+    const { invoiceId, invoiceNumber, amountPence } = req.body;
+
+    if (!amountPence || amountPence <= 0) {
+      return res.status(400).json({
+        error: 'Cannot create PayPal order for an invoice with zero or negative balance due.',
+      });
+    }
+
+    const token = await getPayPalAccessToken();
+    const amountGbp = (Math.round(amountPence) / 100).toFixed(2);
+    const origin = req.headers.origin || 'http://localhost:3000';
+
+    const orderPayload = {
+      intent: 'CAPTURE',
+      purchase_units: [
+        {
+          reference_id: invoiceNumber || 'INV',
+          description: `TradePay: Payment for Invoice ${invoiceNumber || ''}`,
+          amount: {
+            currency_code: 'GBP',
+            value: amountGbp,
+          },
+        },
+      ],
+      application_context: {
+        brand_name: 'TradePay',
+        landing_page: 'NO_PREFERENCE',
+        user_action: 'PAY_NOW',
+        return_url: `${origin}?paypal_action=approved&invoiceId=${invoiceId || ''}`,
+        cancel_url: `${origin}?paypal_action=cancelled&invoiceId=${invoiceId || ''}`,
+      },
+    };
+
+    console.log(
+      `[server.ts] Creating PayPal Sandbox order for £${amountGbp} (Invoice ${invoiceNumber})...`
+    );
+
+    const orderRes = await fetchPayPalWithTimeout(`${PAYPAL_API_BASE}/v2/checkout/orders`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(orderPayload),
+    });
+
+    const orderData = await orderRes.json();
+
+    if (!orderRes.ok) {
+      console.error('[server.ts] PayPal create-order error:', orderData);
+      const detailMsg =
+        orderData.details?.[0]?.description || orderData.message || JSON.stringify(orderData);
+      return res.status(orderRes.status).json({
+        error: `PayPal order creation failed (${orderRes.status}): ${detailMsg}`,
+        raw: orderData,
+      });
+    }
+
+    const approveLink = orderData.links?.find((l: any) => l.rel === 'approve')?.href;
+
+    console.log(`[server.ts] PayPal order created: ${orderData.id} (status: ${orderData.status})`);
+
+    // Track in memory
+    if (invoiceId) {
+      invoiceOrdersMap.set(invoiceId, {
+        orderId: orderData.id,
+        invoiceId,
+        invoiceNumber: invoiceNumber || '',
+        amountPence: Math.round(amountPence),
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    return res.json({
+      success: true,
+      orderId: orderData.id,
+      status: orderData.status,
+      approvalUrl: approveLink,
+      amountGbp,
+      amountPence,
+    });
+  } catch (err: unknown) {
+    console.error('[server.ts] Error in /api/paypal/create-order:', err);
+    return res.status(500).json({
+      error: (err as Error).message || 'Failed to create PayPal order',
+    });
+  }
+});
+
+// Check PayPal Order Status
+app.get('/api/paypal/order-status/:orderId', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const token = await getPayPalAccessToken();
+
+    const orderRes = await fetchPayPalWithTimeout(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    const orderData = await orderRes.json();
+
+    if (!orderRes.ok) {
+      return res.status(orderRes.status).json({
+        error: orderData.message || `Failed to fetch order ${orderId}`,
+        raw: orderData,
+      });
+    }
+
+    return res.json({
+      success: true,
+      orderId: orderData.id,
+      status: orderData.status, // "CREATED", "APPROVED", "COMPLETED"
+      order: orderData,
+    });
+  } catch (err: unknown) {
+    console.error('[server.ts] Error in /api/paypal/order-status:', err);
+    return res.status(500).json({
+      error: (err as Error).message || 'Failed to check PayPal order status',
+    });
+  }
+});
+
+// Capture PayPal Order (Handles already-COMPLETED orders without duplicate captures)
+app.post('/api/paypal/capture-order/:orderId', async (req, res) => {
+  const startMs = Date.now();
+  try {
+    const { orderId } = req.params;
+    const token = await getPayPalAccessToken();
+
+    console.log(`[server.ts] Inspecting order status before capture for ${orderId}...`);
+
+    // 1. Check order status first: if already COMPLETED at PayPal, don't capture again, just return it!
+    const checkRes = await fetchPayPalWithTimeout(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    const checkData = await checkRes.json();
+    if (checkRes.ok && checkData.status === 'COMPLETED') {
+      const elapsedMs = Date.now() - startMs;
+      const captures = checkData.purchase_units?.[0]?.payments?.captures || [];
+      const cap = captures[0];
+      const amountVal = cap?.amount?.value || checkData.purchase_units?.[0]?.amount?.value || '0.00';
+      const amountPence = Math.round(parseFloat(amountVal) * 100);
+
+      console.log(
+        `[server.ts] Order ${orderId} is ALREADY COMPLETED at PayPal. Returning capture without re-capturing (${elapsedMs}ms).`
+      );
+
+      return res.json({
+        success: true,
+        alreadyCompleted: true,
+        status: 'COMPLETED',
+        captureId: cap?.id || orderId,
+        amountGbp: amountVal,
+        amountPence,
+        captureData: checkData,
+        raw: checkData,
+        httpStatus: 200,
+        elapsedMs,
+      });
+    }
+
+    // 2. If not already completed, send capture request
+    console.log(`[server.ts] Sending capture request to PayPal for order ${orderId}...`);
+    const captureRes = await fetchPayPalWithTimeout(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}/capture`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    });
+
+    const captureData = await captureRes.json();
+    const elapsedMs = Date.now() - startMs;
+
+    if (!captureRes.ok) {
+      console.error(`[server.ts] PayPal capture-order error (${captureRes.status}):`, captureData);
+
+      // Check if it's ORDER_ALREADY_CAPTURED
+      const isAlreadyCaptured =
+        captureData.details?.some((d: any) => d.issue === 'ORDER_ALREADY_CAPTURED') ||
+        (captureData.message && captureData.message.includes('already captured'));
+
+      if (isAlreadyCaptured) {
+        console.log(`[server.ts] Order ${orderId} was already captured in another thread. Returning COMPLETED.`);
+        // Re-read order to get captureId and amount
+        const recheckRes = await fetchPayPalWithTimeout(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}`, {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const recheckData = await recheckRes.json();
+        const captures = recheckData.purchase_units?.[0]?.payments?.captures || [];
+        const cap = captures[0];
+        const amountVal = cap?.amount?.value || recheckData.purchase_units?.[0]?.amount?.value || '0.00';
+
+        return res.json({
+          success: true,
+          alreadyCompleted: true,
+          status: 'COMPLETED',
+          captureId: cap?.id || orderId,
+          amountGbp: amountVal,
+          amountPence: Math.round(parseFloat(amountVal) * 100),
+          captureData: recheckData,
+          raw: captureData,
+          httpStatus: captureRes.status,
+          elapsedMs,
+        });
+      }
+
+      const detailMsg =
+        captureData.details?.[0]?.description ||
+        captureData.message ||
+        JSON.stringify(captureData);
+
+      return res.status(captureRes.status).json({
+        success: false,
+        error: `PayPal order capture failed (${captureRes.status}): ${detailMsg}`,
+        httpStatus: captureRes.status,
+        raw: captureData,
+        elapsedMs,
+      });
+    }
+
+    const captureId = captureData.purchase_units?.[0]?.payments?.captures?.[0]?.id || orderId;
+    const amountVal =
+      captureData.purchase_units?.[0]?.payments?.captures?.[0]?.amount?.value ||
+      captureData.purchase_units?.[0]?.amount?.value ||
+      '0.00';
+    const amountPence = Math.round(parseFloat(amountVal) * 100);
+
+    console.log(
+      `[server.ts] PayPal order ${orderId} captured successfully (Capture ID: ${captureId}) in ${elapsedMs}ms`
+    );
+
+    return res.json({
+      success: true,
+      status: captureData.status, // "COMPLETED"
+      captureId,
+      amountGbp: amountVal,
+      amountPence,
+      captureData,
+      raw: captureData,
+      httpStatus: captureRes.status,
+      elapsedMs,
+    });
+  } catch (err: unknown) {
+    const elapsedMs = Date.now() - startMs;
+    console.error(`[server.ts] Error in /api/paypal/capture-order in ${elapsedMs}ms:`, err);
+    return res.status(500).json({
+      success: false,
+      error: (err as Error).message || 'Failed to capture PayPal order',
+      httpStatus: 500,
+      elapsedMs,
+    });
+  }
+});
+
 // Main AI Parse & Diagnostics Endpoint
 app.post('/api/ai/parse-invoice', async (req, res) => {
   const requestStartTime = Date.now();
@@ -314,42 +738,53 @@ Return strictly JSON adhering to the specified schema.
     },
   };
 
-  const callWithTimeout = (timeoutMs: number) => {
+  const callWithTimeout = (modelName: string, timeoutMs: number) => {
     let t: NodeJS.Timeout | undefined;
     const p = new Promise<never>((_, rej) => {
-      t = setTimeout(() => rej(new Error(`Gemini call timed out after ${timeoutMs}ms`)), timeoutMs);
+      t = setTimeout(
+        () => rej(new Error(`Gemini call to ${modelName} timed out after ${timeoutMs}ms`)),
+        timeoutMs
+      );
     });
-    return Promise.race([ai.models.generateContent(generateParams), p]).finally(() => {
+    return Promise.race([
+      ai.models.generateContent({
+        ...generateParams,
+        model: modelName,
+      }),
+      p,
+    ]).finally(() => {
       if (t) clearTimeout(t);
     });
   };
 
   try {
     console.log(`[server.ts] Executing Gemini call for ${ACTIVE_MODEL} (attempt 1)...`);
-    response = await callWithTimeout(9000);
+    response = await callWithTimeout(ACTIVE_MODEL, 9000);
   } catch (firstErr: unknown) {
     const elapsedSoFar = Date.now() - requestStartTime;
     const errString = String(firstErr);
-    const isTransient =
+    const is503OrTimeout =
       errString.includes('503') ||
       errString.includes('UNAVAILABLE') ||
       errString.includes('high demand') ||
-      errString.includes('timed out');
+      errString.includes('timed out') ||
+      errString.includes('timeout');
 
-    if (isTransient && elapsedSoFar < MAX_TOTAL_BUDGET_MS - 4000) {
+    if (is503OrTimeout && elapsedSoFar < MAX_TOTAL_BUDGET_MS - 4000) {
       isRetrying = true;
+      const fallbackModel = 'gemini-3.5-flash';
       console.log(
-        `[server.ts] Gemini call retrying (attempt 2/2) due to transient issue: ${(firstErr as Error).message}`
+        `[server.ts] Gemini model ${ACTIVE_MODEL} returned 503 or timed out. Automatically retrying once with ${fallbackModel} (attempt 2/2)...`
       );
-      const remainingBudget = Math.min(MAX_TOTAL_BUDGET_MS - (Date.now() - requestStartTime), 8500);
+      const remainingBudget = Math.min(MAX_TOTAL_BUDGET_MS - (Date.now() - requestStartTime), 9000);
       try {
-        response = await callWithTimeout(remainingBudget);
+        response = await callWithTimeout(fallbackModel, remainingBudget);
       } catch (secondErr: unknown) {
-        console.error('[server.ts] Retry attempt failed:', secondErr);
+        console.error(`[server.ts] Retry attempt with ${fallbackModel} failed:`, secondErr);
         throw secondErr;
       }
     } else {
-      console.log(`[server.ts] Not retrying (elapsed: ${elapsedSoFar}ms, isTransient: ${isTransient})`);
+      console.log(`[server.ts] Not retrying (elapsed: ${elapsedSoFar}ms, is503OrTimeout: ${is503OrTimeout})`);
       throw firstErr;
     }
   }

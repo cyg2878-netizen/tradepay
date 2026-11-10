@@ -51,7 +51,19 @@ export interface LineItem {
   totalPrice: number; // integer pence
 }
 
+export type PaymentMethod = 'cash' | 'card' | 'bank transfer' | 'PayPal';
 export type InvoiceStatus = 'draft' | 'sent' | 'partly paid' | 'paid';
+
+export interface Payment {
+  id: string;
+  amount: number; // integer pence
+  method: PaymentMethod;
+  date: string; // YYYY-MM-DD
+  notes?: string;
+  paypalOrderId?: string;
+  paypalCaptureId?: string;
+  createdAt: string;
+}
 
 export interface Invoice {
   id: string;
@@ -65,10 +77,12 @@ export interface Invoice {
   subtotal: number; // integer pence
   vatAmount: number; // integer pence
   total: number; // integer pence
-  amountPaid: number; // integer pence
-  balanceDue: number; // integer pence
+  payments: Payment[]; // list of payments made
+  amountPaid: number; // integer pence (sum of payments)
+  balanceDue: number; // integer pence (total - amountPaid)
   status: InvoiceStatus;
   notes?: string;
+  pendingPayPalOrderId?: string; // Stored PayPal order ID for cross-refresh recovery
   createdAt: string;
 }
 
@@ -232,6 +246,7 @@ const INITIAL_INVOICES: Invoice[] = [
     subtotal: 82500, // £825.00
     vatAmount: 16500, // £165.00
     total: 99000, // £990.00
+    payments: [],
     amountPaid: 0,
     balanceDue: 99000,
     status: 'sent',
@@ -258,6 +273,16 @@ const INITIAL_INVOICES: Invoice[] = [
     subtotal: 14000,
     vatAmount: 0,
     total: 14000,
+    payments: [
+      {
+        id: 'pay_init_01',
+        amount: 14000,
+        method: 'bank transfer',
+        date: '2026-11-06',
+        notes: 'Paid via bank transfer on completion.',
+        createdAt: '2026-11-06T15:00:00Z',
+      },
+    ],
     amountPaid: 14000,
     balanceDue: 0,
     status: 'paid',
@@ -267,6 +292,25 @@ const INITIAL_INVOICES: Invoice[] = [
 ];
 
 // Helper to access LocalStorage safely
+type DBListener = () => void;
+const dbListeners = new Set<DBListener>();
+
+function notifySubscribers() {
+  dbListeners.forEach((listener) => {
+    try {
+      listener();
+    } catch (err) {
+      console.error('[TradePayDB] Subscriber error:', err);
+    }
+  });
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', () => {
+    notifySubscribers();
+  });
+}
+
 function loadFromStorage<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
@@ -283,6 +327,7 @@ function loadFromStorage<T>(key: string, fallback: T): T {
 function saveToStorage<T>(key: string, value: T): void {
   try {
     localStorage.setItem(key, JSON.stringify(value));
+    notifySubscribers();
   } catch (err) {
     console.error('TradePay Storage Save Error:', err);
   }
@@ -344,7 +389,37 @@ export const TradePayDB = {
 
   // Invoices
   getInvoices(): Invoice[] {
-    return loadFromStorage<Invoice[]>(STORAGE_KEYS.INVOICES, INITIAL_INVOICES);
+    const list = loadFromStorage<Invoice[]>(STORAGE_KEYS.INVOICES, INITIAL_INVOICES);
+    return list.map((inv) => {
+      const payments: Payment[] = Array.isArray(inv.payments)
+        ? inv.payments
+        : (inv.amountPaid > 0
+        ? [
+            {
+              id: 'pay_legacy_' + inv.id,
+              amount: inv.amountPaid,
+              method: 'bank transfer' as PaymentMethod,
+              date: inv.date,
+              createdAt: inv.createdAt,
+            },
+          ]
+        : []);
+      const amountPaid = payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+      const balanceDue = Math.max(0, inv.total - amountPaid);
+      let status = inv.status;
+      if (inv.total > 0 && amountPaid >= inv.total) {
+        status = 'paid';
+      } else if (amountPaid > 0 && balanceDue > 0) {
+        status = 'partly paid';
+      }
+      return {
+        ...inv,
+        payments,
+        amountPaid,
+        balanceDue,
+        status,
+      };
+    });
   },
 
   getInvoiceById(id: string): Invoice | undefined {
@@ -372,57 +447,52 @@ export const TradePayDB = {
   },
 
   saveInvoice(
-    invoiceData: Omit<Invoice, 'id' | 'createdAt' | 'invoiceNumber'> & {
+    invoiceData: Omit<Invoice, 'id' | 'createdAt' | 'invoiceNumber' | 'payments'> & {
       id?: string;
       invoiceNumber?: string;
+      payments?: Payment[];
     }
   ): Invoice {
     const invoices = this.getInvoices();
     let updated: Invoice;
 
+    const existing = invoiceData.id ? invoices.find((i) => i.id === invoiceData.id) : undefined;
+    const payments = invoiceData.payments || (existing ? existing.payments : []);
+    const amountPaid = payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+
     const mathTotals = calculateInvoiceTotals(
       invoiceData.lineItems,
       invoiceData.vatRate,
-      invoiceData.amountPaid
+      amountPaid
     );
 
     // Auto-update status if paid or partly paid
     let status = invoiceData.status;
-    if (mathTotals.total > 0 && mathTotals.amountPaid >= mathTotals.total) {
+    if (mathTotals.total > 0 && amountPaid >= mathTotals.total) {
       status = 'paid';
-    } else if (mathTotals.amountPaid > 0 && mathTotals.balanceDue > 0) {
+    } else if (amountPaid > 0 && mathTotals.balanceDue > 0) {
       status = 'partly paid';
     }
 
-    if (invoiceData.id) {
+    if (invoiceData.id && existing) {
       const index = invoices.findIndex((i) => i.id === invoiceData.id);
-      if (index >= 0) {
-        updated = {
-          ...invoices[index],
-          ...invoiceData,
-          ...mathTotals,
-          status,
-          id: invoiceData.id,
-          invoiceNumber: invoiceData.invoiceNumber || invoices[index].invoiceNumber,
-        };
-        invoices[index] = updated;
-      } else {
-        updated = {
-          ...invoiceData,
-          ...mathTotals,
-          status,
-          id: invoiceData.id,
-          invoiceNumber: invoiceData.invoiceNumber || this.getNextInvoiceNumber(),
-          createdAt: new Date().toISOString(),
-        };
-        invoices.push(updated);
-      }
+      updated = {
+        ...invoices[index],
+        ...invoiceData,
+        ...mathTotals,
+        payments,
+        status,
+        id: invoiceData.id,
+        invoiceNumber: invoiceData.invoiceNumber || invoices[index].invoiceNumber,
+      };
+      invoices[index] = updated;
     } else {
       updated = {
         ...invoiceData,
         ...mathTotals,
+        payments,
         status,
-        id: 'inv_' + Math.random().toString(36).substring(2, 9),
+        id: invoiceData.id || ('inv_' + Math.random().toString(36).substring(2, 9)),
         invoiceNumber: invoiceData.invoiceNumber || this.getNextInvoiceNumber(),
         createdAt: new Date().toISOString(),
       };
@@ -433,9 +503,159 @@ export const TradePayDB = {
     return updated;
   },
 
+  recordPayment(
+    invoiceId: string,
+    paymentData: {
+      amount: number; // integer pence
+      method: PaymentMethod;
+      date: string;
+      notes?: string;
+      paypalOrderId?: string;
+      paypalCaptureId?: string;
+    }
+  ): Invoice | undefined {
+    const invoices = this.getInvoices();
+    const index = invoices.findIndex((i) => i.id === invoiceId);
+    if (index < 0) return undefined;
+
+    const inv = invoices[index];
+
+    // Capture only once per order (no duplicate payments)
+    if (
+      paymentData.paypalOrderId &&
+      (inv.payments || []).some((p) => p.paypalOrderId === paymentData.paypalOrderId)
+    ) {
+      console.log(
+        `[TradePayDB] PayPal order ${paymentData.paypalOrderId} already recorded on invoice ${invoiceId}. Skipping duplicate.`
+      );
+      if (inv.pendingPayPalOrderId === paymentData.paypalOrderId) {
+        inv.pendingPayPalOrderId = undefined;
+        invoices[index] = inv;
+        saveToStorage(STORAGE_KEYS.INVOICES, invoices);
+      }
+      return inv;
+    }
+
+    const newPayment: Payment = {
+      ...paymentData,
+      id: 'pay_' + Math.random().toString(36).substring(2, 9),
+      amount: Math.round(Number(paymentData.amount) || 0),
+      createdAt: new Date().toISOString(),
+    };
+
+    const payments = [...(inv.payments || []), newPayment];
+    const amountPaid = payments.reduce((sum, p) => sum + p.amount, 0);
+    const balanceDue = Math.max(0, inv.total - amountPaid);
+
+    let status: InvoiceStatus = inv.status;
+    if (inv.total > 0 && amountPaid >= inv.total) {
+      status = 'paid';
+    } else if (amountPaid > 0 && balanceDue > 0) {
+      status = 'partly paid';
+    }
+
+    const updated: Invoice = {
+      ...inv,
+      payments,
+      amountPaid,
+      balanceDue,
+      status,
+      pendingPayPalOrderId:
+        inv.pendingPayPalOrderId === paymentData.paypalOrderId ? undefined : inv.pendingPayPalOrderId,
+    };
+
+    invoices[index] = updated;
+    saveToStorage(STORAGE_KEYS.INVOICES, invoices);
+    return updated;
+  },
+
+  setPendingPayPalOrder(invoiceId: string, orderId: string | undefined): Invoice | undefined {
+    const invoices = this.getInvoices();
+    const index = invoices.findIndex((i) => i.id === invoiceId);
+    if (index < 0) return undefined;
+
+    const updated: Invoice = {
+      ...invoices[index],
+      pendingPayPalOrderId: orderId,
+    };
+    invoices[index] = updated;
+    saveToStorage(STORAGE_KEYS.INVOICES, invoices);
+    return updated;
+  },
+
+  deletePayment(invoiceId: string, paymentId: string): Invoice | undefined {
+    const invoices = this.getInvoices();
+    const index = invoices.findIndex((i) => i.id === invoiceId);
+    if (index < 0) return undefined;
+
+    const inv = invoices[index];
+    const payments = (inv.payments || []).filter((p) => p.id !== paymentId);
+    const amountPaid = payments.reduce((sum, p) => sum + p.amount, 0);
+    const balanceDue = Math.max(0, inv.total - amountPaid);
+
+    let status: InvoiceStatus = inv.status;
+    if (inv.total > 0 && amountPaid >= inv.total) {
+      status = 'paid';
+    } else if (amountPaid > 0 && balanceDue > 0) {
+      status = 'partly paid';
+    } else if (amountPaid === 0 && (status === 'paid' || status === 'partly paid')) {
+      status = 'sent';
+    }
+
+    const updated: Invoice = {
+      ...inv,
+      payments,
+      amountPaid,
+      balanceDue,
+      status,
+    };
+
+    invoices[index] = updated;
+    saveToStorage(STORAGE_KEYS.INVOICES, invoices);
+    return updated;
+  },
+
   deleteInvoice(id: string): void {
     const invoices = this.getInvoices().filter((i) => i.id !== id);
     saveToStorage(STORAGE_KEYS.INVOICES, invoices);
+  },
+
+  // Subscription for live reactive updates
+  subscribe(listener: () => void): () => void {
+    dbListeners.add(listener);
+    return () => {
+      dbListeners.delete(listener);
+    };
+  },
+
+  notify(): void {
+    notifySubscribers();
+  },
+
+  // Client calculations in code (strictly integer pence)
+  getClientFinancialSummary(clientId: string): {
+    totalInvoiced: number; // integer pence
+    totalPaid: number; // integer pence
+    totalOutstanding: number; // integer pence
+    invoiceCount: number;
+  } {
+    const invoices = this.getInvoicesForClient(clientId);
+    const totalInvoiced = invoices.reduce((sum, inv) => sum + (Number(inv.total) || 0), 0);
+    const totalPaid = invoices.reduce((sum, inv) => {
+      const paid = (inv.payments || []).reduce((pSum, p) => pSum + (Number(p.amount) || 0), 0);
+      return sum + paid;
+    }, 0);
+    const totalOutstanding = Math.max(0, totalInvoiced - totalPaid);
+    return {
+      totalInvoiced,
+      totalPaid,
+      totalOutstanding,
+      invoiceCount: invoices.length,
+    };
+  },
+
+  getClientOutstandingBalance(clientId: string): number {
+    return this.getClientFinancialSummary(clientId).totalOutstanding;
   },
 
   // Placeholders for Projects, Jobs, Quotes, Drafts (empty placeholders as required by Task 1)
