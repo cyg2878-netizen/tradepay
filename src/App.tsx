@@ -102,44 +102,6 @@ export default function App() {
     return unsubscribe;
   }, []);
 
-  const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
-  const [isTestingAI, setIsTestingAI] = useState(false);
-
-  const runTestAI = async (overrideModel?: string) => {
-    setIsTestingAI(true);
-    try {
-      if (overrideModel) {
-        await fetch('/api/ai/set-model', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: overrideModel }),
-        });
-      }
-      const res = await fetch('/api/ai/parse-invoice', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: 'Reply with the word OK' }),
-      });
-      const data = await res.json();
-      setDiagnosticResult({
-        ...data,
-        httpStatus: res.status,
-      });
-      showToast(res.ok ? 'Diagnostic complete: OK' : 'Diagnostic completed with error');
-    } catch (err: unknown) {
-      const error = err as { message?: string };
-      setDiagnosticResult({
-        modelUsed: overrideModel || 'current',
-        hasKey: true,
-        httpStatus: 0,
-        rawError: error?.message || String(err),
-        elapsedMs: 0,
-      });
-    } finally {
-      setIsTestingAI(false);
-    }
-  };
-
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
@@ -255,15 +217,15 @@ export default function App() {
                 </div>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => showToast('Notifications')}
-                    className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/15 flex items-center justify-center text-slate-300 transition-colors"
+                    onClick={() => showToast('Coming soon')}
+                    className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/15 flex items-center justify-center text-slate-300 transition-colors cursor-pointer"
                     aria-label="Notifications"
                   >
                     <Bell className="w-4 h-4" />
                   </button>
                   <button
-                    onClick={() => showToast('Settings')}
-                    className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/15 flex items-center justify-center text-slate-300 transition-colors"
+                    onClick={() => showToast('Coming soon')}
+                    className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/15 flex items-center justify-center text-slate-300 transition-colors cursor-pointer"
                     aria-label="Settings"
                   >
                     <Settings className="w-4 h-4" />
@@ -528,14 +490,14 @@ export default function App() {
                     </span>
                   </div>
                   <button
-                    onClick={() => showToast('Projects scheduled for Phase 4')}
-                    className="p-1 rounded-lg text-slate-400 hover:text-slate-700 transition-colors"
+                    onClick={() => showToast('Coming soon')}
+                    className="p-1 rounded-lg text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
                   >
                     <Plus className="w-4 h-4" />
                   </button>
                 </div>
                 <div className="p-4 text-center text-xs text-slate-400">
-                  0 projects. Projects feature scheduled for Phase 4.
+                  Coming soon
                 </div>
               </section>
 
@@ -550,14 +512,14 @@ export default function App() {
                     </span>
                   </div>
                   <button
-                    onClick={() => showToast('Jobs scheduled for Phase 4')}
-                    className="p-1 rounded-lg text-slate-400 hover:text-slate-700 transition-colors"
+                    onClick={() => showToast('Coming soon')}
+                    className="p-1 rounded-lg text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
                   >
                     <Plus className="w-4 h-4" />
                   </button>
                 </div>
                 <div className="p-4 text-center text-xs text-slate-400">
-                  0 jobs assigned. Scheduled for Phase 4.
+                  Coming soon
                 </div>
               </section>
 
@@ -572,161 +534,16 @@ export default function App() {
                     </span>
                   </div>
                   <button
-                    onClick={() => showToast('Quotes scheduled for Phase 5')}
-                    className="p-1 rounded-lg text-slate-400 hover:text-slate-700 transition-colors"
+                    onClick={() => showToast('Coming soon')}
+                    className="p-1 rounded-lg text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
                   >
                     <Plus className="w-4 h-4" />
                   </button>
                 </div>
                 <div className="p-4 text-center text-xs text-slate-400">
-                  0 quotes. Quotes layout scheduled for Phase 5.
+                  Coming soon
                 </div>
               </section>
-
-              {/* TASK 2C: Temporary Test AI Diagnosis Button & Display */}
-              <div className="pt-2">
-                <button
-                  type="button"
-                  onClick={() => runTestAI()}
-                  disabled={isTestingAI}
-                  className="w-full py-3 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-yellow-400 font-bold text-xs border border-yellow-400/40 flex items-center justify-center gap-2 shadow-sm cursor-pointer transition-all active:scale-[0.98]"
-                >
-                  {isTestingAI ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin text-yellow-400" />
-                      <span>Diagnosing AI Connection...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-4 h-4 text-yellow-400 fill-current" />
-                      <span>Test AI (Diagnose Connection & Benchmark Models)</span>
-                    </>
-                  )}
-                </button>
-              </div>
-
-              {/* Diagnostic Results Card */}
-              {diagnosticResult && (
-                <div className="bg-slate-900 text-white p-4 rounded-2xl border border-yellow-400/40 shadow-xl space-y-3 font-mono text-xs animate-fade-in">
-                  <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-                    <span className="font-bold text-yellow-400 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
-                      <Sparkles className="w-3.5 h-3.5" /> AI Diagnostic Results
-                    </span>
-                    <button
-                      onClick={() => setDiagnosticResult(null)}
-                      className="text-slate-400 hover:text-white"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  <div className="space-y-1.5 text-[11px]">
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Model ID Used:</span>
-                      <span className="font-bold text-yellow-300">{diagnosticResult.modelUsed}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">API Key Configured:</span>
-                      <span
-                        className={
-                          diagnosticResult.hasKey
-                            ? 'text-emerald-400 font-bold'
-                            : 'text-rose-400 font-bold'
-                        }
-                      >
-                        {diagnosticResult.hasKey ? 'Yes (Injected by AI Studio)' : 'No (Missing)'}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">HTTP Status:</span>
-                      <span
-                        className={`font-bold ${
-                          diagnosticResult.httpStatus === 200
-                            ? 'text-emerald-400'
-                            : 'text-rose-400'
-                        }`}
-                      >
-                        {diagnosticResult.httpStatus}{' '}
-                        {diagnosticResult.httpStatus === 200 ? 'OK' : 'Error'}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Response / Output:</span>
-                      <span className="font-bold text-white">
-                        {diagnosticResult.resultText || '(none)'}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Elapsed Time:</span>
-                      <span className="font-bold text-cyan-300">
-                        {diagnosticResult.elapsedMs}ms
-                      </span>
-                    </div>
-                  </div>
-
-                  {diagnosticResult.rawError && (
-                    <div className="p-2.5 rounded-xl bg-rose-950/80 border border-rose-700 text-rose-200 text-[10px] break-all">
-                      <span className="font-bold uppercase block mb-1">Raw Error Body:</span>
-                      {typeof diagnosticResult.rawError === 'object'
-                        ? JSON.stringify(diagnosticResult.rawError, null, 2)
-                        : diagnosticResult.rawError}
-                    </div>
-                  )}
-
-                  {/* Benchmark 3 Flash-class models */}
-                  {diagnosticResult.benchmarks && (
-                    <div className="pt-2 border-t border-slate-800 space-y-2">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-                        Flash-Class Models Benchmark ("Reply with OK", 10s max):
-                      </span>
-                      <div className="space-y-1.5">
-                        {diagnosticResult.benchmarks.map((b: any) => (
-                          <div
-                            key={b.model}
-                            className={`p-2 rounded-xl border flex items-center justify-between gap-2 ${
-                              b.status === 'ok'
-                                ? 'bg-slate-800/80 border-slate-700'
-                                : 'bg-rose-950/40 border-rose-900/60'
-                            }`}
-                          >
-                            <div>
-                              <div className="flex items-center gap-1.5">
-                                <span className="font-bold text-white text-[11px]">{b.model}</span>
-                                {b.model === diagnosticResult.modelUsed && (
-                                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-yellow-400 text-slate-950 font-black">
-                                    CURRENT
-                                  </span>
-                                )}
-                              </div>
-                              <span className="text-[10px] text-slate-400">
-                                {b.status === 'ok' ? `Output: "${b.output}"` : `Error: ${b.error}`}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <span
-                                className={`text-[11px] font-bold ${
-                                  b.status === 'ok' ? 'text-emerald-400' : 'text-rose-400'
-                                }`}
-                              >
-                                {b.elapsedMs}ms
-                              </span>
-                              {b.status === 'ok' && b.model !== diagnosticResult.modelUsed && (
-                                <button
-                                  type="button"
-                                  onClick={() => runTestAI(b.model)}
-                                  className="px-2 py-1 rounded bg-yellow-400 hover:bg-yellow-300 text-slate-950 font-bold text-[10px] cursor-pointer"
-                                >
-                                  Switch & Test
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
             </main>
           </div>
         )}
@@ -1147,21 +964,18 @@ function AIInputBar({
         </div>
       )}
 
-      {/* Clear Live Processing State Banner */}
+      {/* Live Processing State Banner with animated moving dots (no timer) */}
       {isProcessing && (
-        <div className="mb-2.5 p-3 rounded-xl bg-yellow-400/15 border border-yellow-400/40 text-yellow-200 text-xs flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <Loader2 className="w-4 h-4 text-yellow-400 animate-spin shrink-0" />
-            <div>
-              <p className="font-bold text-yellow-300">Processing with Gemini AI...</p>
-              <p className="text-[10px] text-yellow-400/80">
-                Extracting items from notes & receipts ({processingElapsed}s / 30s max)
-              </p>
-            </div>
+        <div className="mb-2.5 p-3 rounded-xl bg-yellow-400/15 border border-yellow-400/40 text-yellow-200 text-xs flex items-center gap-2.5">
+          <Loader2 className="w-4 h-4 text-yellow-400 animate-spin shrink-0" />
+          <div className="flex items-center gap-1 font-bold text-yellow-300 text-xs">
+            <span>Processing</span>
+            <span className="inline-flex items-center gap-1 ml-0.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-bounce" style={{ animationDelay: '0ms' }}></span>
+              <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-bounce" style={{ animationDelay: '150ms' }}></span>
+              <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-bounce" style={{ animationDelay: '300ms' }}></span>
+            </span>
           </div>
-          <span className="text-[11px] font-mono text-yellow-300 font-bold px-2 py-0.5 rounded bg-black/40">
-            {processingElapsed}s
-          </span>
         </div>
       )}
 
@@ -1311,7 +1125,14 @@ function AIInputBar({
           {isProcessing ? (
             <>
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              <span>Analyzing...</span>
+              <span className="flex items-center gap-0.5">
+                Processing
+                <span className="inline-flex items-center gap-0.5 ml-0.5">
+                  <span className="w-1 h-1 rounded-full bg-slate-950 animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                  <span className="w-1 h-1 rounded-full bg-slate-950 animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                  <span className="w-1 h-1 rounded-full bg-slate-950 animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                </span>
+              </span>
             </>
           ) : (
             <>
@@ -1327,7 +1148,7 @@ function AIInputBar({
 
 // ==========================================
 // TASK 2: AI REVIEW SCREEN
-// (QuickBooks-style editable line-items table with "please confirm" highlights)
+// (Editable line-items table with "please confirm" highlights)
 // ==========================================
 function AIReviewScreen({
   aiData,
@@ -1847,7 +1668,7 @@ function AIReviewScreen({
             <FileClock className="w-4 h-4" /> Save as Draft Invoice
           </button>
           <p className="text-center text-[10px] text-slate-500 mt-2">
-            Maths verified in integer pence. Draft invoice will appear in the Drafts list.
+            Draft invoice will appear in the Drafts list.
           </p>
         </div>
       </div>
@@ -2283,7 +2104,7 @@ function ClientFormView({
 }
 
 // ==========================================
-// INVOICE EDITOR VIEW (QUICKBOOKS STYLE)
+// INVOICE EDITOR VIEW
 // ==========================================
 function InvoiceEditorView({
   invoiceId,
@@ -2325,10 +2146,85 @@ function InvoiceEditorView({
     return d.toISOString().split('T')[0];
   });
 
+  // Helper to add days to YYYY-MM-DD
+  const addDaysToDate = (baseDate: string, days: number): string => {
+    try {
+      const parts = baseDate.split('-').map(Number);
+      if (parts.length === 3) {
+        const d = new Date(parts[0], parts[1] - 1, parts[2]);
+        d.setDate(d.getDate() + days);
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+      }
+    } catch {
+      // fallback
+    }
+    const d = new Date(baseDate || Date.now());
+    d.setDate(d.getDate() + days);
+    return d.toISOString().split('T')[0];
+  };
+
+  // Payment terms dropdown (7 / 14 / 30 days / custom)
+  const [terms, setTerms] = useState<string>(() => {
+    if (currentInvoice?.date && currentInvoice?.dueDate) {
+      const d1 = new Date(currentInvoice.date);
+      const d2 = new Date(currentInvoice.dueDate);
+      const diffDays = Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24));
+      if (diffDays === 7) return '7';
+      if (diffDays === 14) return '14';
+      if (diffDays === 30) return '30';
+      return 'custom';
+    }
+    return '14';
+  });
+
+  const handleDateChange = (newDate: string) => {
+    setDate(newDate);
+    if (terms === '7' || terms === '14' || terms === '30') {
+      setDueDate(addDaysToDate(newDate, parseInt(terms, 10)));
+    }
+  };
+
+  const handleTermsChange = (newTerms: string) => {
+    setTerms(newTerms);
+    if (newTerms === '7' || newTerms === '14' || newTerms === '30') {
+      setDueDate(addDaysToDate(date, parseInt(newTerms, 10)));
+    }
+  };
+
+  const handleDueDateChange = (newDueDate: string) => {
+    setDueDate(newDueDate);
+    try {
+      const d1 = new Date(date);
+      const d2 = new Date(newDueDate);
+      const diffDays = Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24));
+      if (diffDays === 7) {
+        setTerms('7');
+      } else if (diffDays === 14) {
+        setTerms('14');
+      } else if (diffDays === 30) {
+        setTerms('30');
+      } else {
+        setTerms('custom');
+      }
+    } catch {
+      setTerms('custom');
+    }
+  };
+
   const [vatRate, setVatRate] = useState<number>(currentInvoice?.vatRate ?? 20);
-  const [notes, setNotes] = useState(
-    currentInvoice?.notes || 'Payment terms 14 days. Thank you for your business.'
-  );
+  const [notes, setNotes] = useState(() => {
+    if (!currentInvoice?.notes) return 'Thank you for your business.';
+    return (
+      currentInvoice.notes
+        .replace(/Payment terms \d+ days\.?\s*/gi, '')
+        .replace(/Terms:? \d+ days\.?\s*/gi, '')
+        .replace(/VAT \d+%\.?\s*/gi, '')
+        .trim() || 'Thank you for your business.'
+    );
+  });
 
   interface EditorLineItem {
     id: string;
@@ -2868,10 +2764,10 @@ function InvoiceEditorView({
           <ArrowLeft className="w-4 h-4" /> Back
         </button>
         <div className="text-center">
-          <span className="text-[10px] text-yellow-400 font-bold uppercase tracking-wider">
-            QuickBooks Style
+          <h2 className="text-sm font-black text-white">Invoice</h2>
+          <span className="text-[10px] text-yellow-400 font-bold tracking-wider">
+            {invoiceNumber}
           </span>
-          <h2 className="text-sm font-black text-white">{invoiceNumber}</h2>
         </div>
         {currentInvoiceId ? (
           <button
@@ -2898,13 +2794,15 @@ function InvoiceEditorView({
           <div>
             <div className="flex items-center justify-between mb-1">
               <label className="text-xs font-bold text-slate-700">Client *</label>
-              <button
-                type="button"
-                onClick={onOpenAddClient}
-                className="text-[11px] font-bold text-slate-900 flex items-center gap-1 hover:underline cursor-pointer"
-              >
-                <PlusCircle className="w-3 h-3 text-yellow-500" /> + New Client
-              </button>
+              {!prefilledClientId && (
+                <button
+                  type="button"
+                  onClick={onOpenAddClient}
+                  className="text-[11px] font-bold text-slate-900 flex items-center gap-1 hover:underline cursor-pointer"
+                >
+                  <PlusCircle className="w-3 h-3 text-yellow-500" /> + New Client
+                </button>
+              )}
             </div>
             {clients.length === 0 ? (
               <button
@@ -2921,14 +2819,14 @@ function InvoiceEditorView({
               >
                 {clients.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.name} {c.address ? `(${c.address})` : ''}
+                    {c.name}
                   </option>
                 ))}
               </select>
             )}
           </div>
 
-          {/* Invoice Number & Dates */}
+          {/* Row 1: Invoice No. (left) & Payment Terms (right) */}
           <div className="grid grid-cols-2 gap-2.5">
             <div>
               <label className="block text-[11px] font-bold text-slate-600 mb-1">
@@ -2942,24 +2840,46 @@ function InvoiceEditorView({
               />
             </div>
             <div>
-              <label className="block text-[11px] font-bold text-slate-600 mb-1">Invoice Date</label>
-              <input
-                type="date"
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
-                className="w-full text-xs p-2 rounded-xl border border-slate-200 focus:outline-none focus:border-yellow-400"
-              />
+              <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                Payment Terms
+              </label>
+              <select
+                value={terms}
+                onChange={(e) => handleTermsChange(e.target.value)}
+                className="w-full text-xs p-2 rounded-xl border border-slate-200 bg-white font-medium focus:outline-none focus:border-yellow-400"
+              >
+                <option value="7">7 days</option>
+                <option value="14">14 days</option>
+                <option value="30">30 days</option>
+                <option value="custom">Custom</option>
+              </select>
             </div>
           </div>
 
-          <div>
-            <label className="block text-[11px] font-bold text-slate-600 mb-1">Payment Due Date</label>
-            <input
-              type="date"
-              value={dueDate}
-              onChange={(e) => setDueDate(e.target.value)}
-              className="w-full text-xs p-2 rounded-xl border border-slate-200 focus:outline-none focus:border-yellow-400"
-            />
+          {/* Row 2: Invoice Date (left) & Due Date (right) */}
+          <div className="grid grid-cols-2 gap-2.5">
+            <div>
+              <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                Invoice Date
+              </label>
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => handleDateChange(e.target.value)}
+                className="w-full text-xs p-2 rounded-xl border border-slate-200 focus:outline-none focus:border-yellow-400"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                Due Date
+              </label>
+              <input
+                type="date"
+                value={dueDate}
+                onChange={(e) => handleDueDateChange(e.target.value)}
+                className="w-full text-xs p-2 rounded-xl border border-slate-200 focus:outline-none focus:border-yellow-400"
+              />
+            </div>
           </div>
         </div>
 
@@ -2969,7 +2889,6 @@ function InvoiceEditorView({
             <h3 className="font-bold text-xs uppercase tracking-wider text-slate-900">
               Line Items ({items.length})
             </h3>
-            <span className="text-[10px] text-slate-500 font-medium">All maths in code</span>
           </div>
 
           <div className="p-3 space-y-3">
@@ -3137,12 +3056,13 @@ function InvoiceEditorView({
           {/* Notes */}
           <div className="pt-2">
             <label className="block text-[11px] font-bold text-slate-600 mb-1">
-              Payment Terms / Notes
+              Notes
             </label>
             <textarea
               rows={2}
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
+              placeholder="Additional notes..."
               className="w-full text-xs p-2 rounded-xl border border-slate-200 resize-none focus:outline-none focus:border-yellow-400"
             />
           </div>
@@ -3232,145 +3152,7 @@ function InvoiceEditorView({
               </div>
             )}
 
-            {/* Quick Diagnostic / Manual Order Sync Toggle */}
-            <div className="flex items-center justify-between pt-1">
-              <button
-                type="button"
-                onClick={() => setShowManualSyncInput(!showManualSyncInput)}
-                className="text-[10px] text-slate-500 hover:text-slate-800 font-semibold flex items-center gap-1 cursor-pointer"
-              >
-                <Sparkles className="w-3 h-3 text-yellow-500" />
-                <span>{showManualSyncInput ? 'Hide Order Recovery Tool' : 'Diagnose / Recover Paid Order'}</span>
-              </button>
-              {isDiagnosing && (
-                <span className="text-[10px] text-amber-700 flex items-center gap-1 font-bold animate-pulse">
-                  <Loader2 className="w-3 h-3 animate-spin" /> Querying PayPal...
-                </span>
-              )}
-            </div>
 
-            {/* Manual Order ID Diagnostic Input */}
-            {showManualSyncInput && (
-              <div className="p-3 rounded-xl bg-slate-100 border border-slate-200 space-y-2 animate-fade-in text-xs">
-                <label className="block text-[11px] font-bold text-slate-700">
-                  Enter PayPal Order ID to diagnose / recover:
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    placeholder="e.g. 5BR204765K5746921"
-                    value={customOrderIdInput}
-                    onChange={(e) => setCustomOrderIdInput(e.target.value)}
-                    className="flex-1 text-xs p-2 rounded-lg border border-slate-300 font-mono bg-white"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => runOrderDiagnostic(customOrderIdInput || currentInvoice?.pendingPayPalOrderId || '')}
-                    disabled={isDiagnosing || (!customOrderIdInput.trim() && !currentInvoice?.pendingPayPalOrderId)}
-                    className="px-3 py-1.5 rounded-lg bg-[#0B1528] text-yellow-400 font-bold text-xs cursor-pointer disabled:opacity-50"
-                  >
-                    Diagnose
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* ====================================================
-                TASK 3B: ON-SCREEN PAYPAL ORDER DIAGNOSTIC PANEL
-                ==================================================== */}
-            {diagnosticInfo && (
-              <div className="p-3.5 rounded-2xl bg-slate-900 border border-slate-700 text-white space-y-2.5 font-mono text-xs shadow-lg animate-fade-in">
-                <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="w-3.5 h-3.5 text-yellow-400" />
-                    <span className="font-bold text-yellow-400 uppercase tracking-wider text-[11px]">
-                      PayPal Live Diagnostic
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-cyan-300 font-bold">{diagnosticInfo.elapsedMs}ms</span>
-                    <button
-                      type="button"
-                      onClick={() => setDiagnosticInfo(null)}
-                      className="text-slate-400 hover:text-white"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5 text-[11px]">
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">PayPal Order ID:</span>
-                    <span className="font-bold text-yellow-300">{diagnosticInfo.orderId}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">Order Status at PayPal Right Now:</span>
-                    <span
-                      className={`font-black uppercase ${
-                        diagnosticInfo.status === 'COMPLETED'
-                          ? 'text-emerald-400'
-                          : diagnosticInfo.status === 'APPROVED'
-                          ? 'text-blue-400'
-                          : 'text-amber-400'
-                      }`}
-                    >
-                      {diagnosticInfo.status}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">Capture Request Sent to PayPal:</span>
-                    <span className="font-bold text-emerald-400">
-                      {diagnosticInfo.captureSent ? 'Yes (Sent to PayPal)' : 'No'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">Capture HTTP Status:</span>
-                    <span
-                      className={`font-bold ${
-                        diagnosticInfo.httpStatus === 200 ? 'text-emerald-400' : 'text-rose-400'
-                      }`}
-                    >
-                      {diagnosticInfo.httpStatus} {diagnosticInfo.httpStatus === 200 ? 'OK' : 'Error'}
-                    </span>
-                  </div>
-                </div>
-
-                {/* 1-Line Root Cause Diagnosis */}
-                <div className="p-2.5 rounded-xl bg-slate-800/90 border border-slate-700 text-[10px] space-y-0.5 font-sans">
-                  <span className="font-bold text-yellow-300 uppercase block tracking-wider text-[9px]">
-                    Root Cause Diagnosis:
-                  </span>
-                  <p className="text-slate-200 font-medium">
-                    The result was never saved to the invoice: the capture request succeeded at PayPal, but state cleanup aborted execution before TradePayDB.recordPayment.
-                  </p>
-                </div>
-
-                {/* Raw PayPal Response View */}
-                <details className="text-[10px]">
-                  <summary className="cursor-pointer text-slate-400 hover:text-white font-sans font-semibold">
-                    View Full Raw Response JSON ({JSON.stringify(diagnosticInfo.rawResponse).length} bytes)
-                  </summary>
-                  <pre className="mt-1.5 p-2 rounded-lg bg-black/70 text-slate-300 max-h-36 overflow-auto text-[9px] break-all whitespace-pre-wrap font-mono">
-                    {JSON.stringify(diagnosticInfo.rawResponse, null, 2)}
-                  </pre>
-                </details>
-
-                {/* Recovery / Retry Action */}
-                {liveTotals.balanceDue > 0 && (
-                  <div className="pt-1">
-                    <button
-                      type="button"
-                      onClick={() => executeCapture(diagnosticInfo.orderId, liveTotals.balanceDue)}
-                      className="w-full py-2 px-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-all active:scale-[0.98]"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                      <span>Sync & Record Payment on Invoice Now</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
 
             {/* Active PayPal Session Card (Order created, Waiting for payment) */}
             {paypalSession && (

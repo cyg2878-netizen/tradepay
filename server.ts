@@ -7,6 +7,15 @@ import { GoogleGenAI, Type } from '@google/genai';
 
 dotenv.config();
 
+// Keep server running and log any unhandled promise rejections or exceptions
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[server.ts] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err, origin) => {
+  console.error(`[server.ts] Uncaught Exception (${origin}):`, err);
+});
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 let PORT = 3000;
@@ -781,11 +790,27 @@ Return strictly JSON adhering to the specified schema.
         response = await callWithTimeout(fallbackModel, remainingBudget);
       } catch (secondErr: unknown) {
         console.error(`[server.ts] Retry attempt with ${fallbackModel} failed:`, secondErr);
-        throw secondErr;
+        const elapsedMs = Date.now() - requestStartTime;
+        return res.status(503).json({
+          success: false,
+          error: 'The AI is busy, please try again',
+          rawError: String(secondErr),
+          modelUsed: fallbackModel,
+          retried: true,
+          elapsedMs,
+        });
       }
     } else {
-      console.log(`[server.ts] Not retrying (elapsed: ${elapsedSoFar}ms, is503OrTimeout: ${is503OrTimeout})`);
-      throw firstErr;
+      console.error(`[server.ts] Gemini call to ${ACTIVE_MODEL} failed (no retry):`, firstErr);
+      const elapsedMs = Date.now() - requestStartTime;
+      return res.status(503).json({
+        success: false,
+        error: 'The AI is busy, please try again',
+        rawError: String(firstErr),
+        modelUsed: ACTIVE_MODEL,
+        retried: false,
+        elapsedMs,
+      });
     }
   }
 
@@ -794,10 +819,11 @@ Return strictly JSON adhering to the specified schema.
     `[server.ts] Gemini finished in ${totalServerDurationMs}ms (Retried: ${isRetrying}, Model: ${ACTIVE_MODEL})`
   );
 
-  const rawText = response.text;
+  const rawText = response?.text;
   if (!rawText) {
-    return res.status(502).json({
-      error: 'AI did not return any text. Please try again.',
+    return res.status(503).json({
+      success: false,
+      error: 'The AI is busy, please try again',
       modelUsed: ACTIVE_MODEL,
       elapsedMs: totalServerDurationMs,
     });
@@ -812,9 +838,11 @@ Return strictly JSON adhering to the specified schema.
       retried: isRetrying,
       timing: { totalMs: totalServerDurationMs },
     });
-  } catch {
+  } catch (jsonErr: unknown) {
+    console.error('[server.ts] Invalid JSON returned by AI:', jsonErr);
     return res.status(502).json({
-      error: 'Invalid JSON returned by AI.',
+      success: false,
+      error: 'The AI is busy, please try again',
       raw: rawText,
       modelUsed: ACTIVE_MODEL,
       elapsedMs: totalServerDurationMs,
