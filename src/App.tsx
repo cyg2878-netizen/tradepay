@@ -557,7 +557,9 @@ export default function App() {
             onCreateInvoice={() =>
               setView({ type: 'invoice-form', prefilledClientId: view.clientId })
             }
-            onSelectInvoice={(invoiceId) => setView({ type: 'invoice-form', invoiceId })}
+            onSelectInvoice={(invoiceId) =>
+              setView({ type: 'invoice-form', invoiceId, prefilledClientId: view.clientId })
+            }
             getStatusBadge={getStatusBadge}
             onDataChange={refreshData}
             onAISuccess={(data) => handleAISuccess(data, view.clientId)}
@@ -588,16 +590,30 @@ export default function App() {
           <InvoiceEditorView
             invoiceId={view.invoiceId}
             prefilledClientId={view.prefilledClientId}
-            onBack={() => setView({ type: 'dashboard' })}
+            onBack={() => {
+              if (view.prefilledClientId) {
+                setView({ type: 'client-view', clientId: view.prefilledClientId });
+              } else {
+                setView({ type: 'dashboard' });
+              }
+            }}
             onSaved={(savedInvoice) => {
               refreshData();
               showToast(`Invoice ${savedInvoice.invoiceNumber} saved!`);
-              setView({ type: 'dashboard' });
+              if (view.prefilledClientId) {
+                setView({ type: 'client-view', clientId: view.prefilledClientId });
+              } else {
+                setView({ type: 'dashboard' });
+              }
             }}
             onDelete={() => {
               refreshData();
               showToast('Invoice deleted');
-              setView({ type: 'dashboard' });
+              if (view.prefilledClientId) {
+                setView({ type: 'client-view', clientId: view.prefilledClientId });
+              } else {
+                setView({ type: 'dashboard' });
+              }
             }}
             onOpenAddClient={() => setView({ type: 'client-form' })}
           />
@@ -608,14 +624,84 @@ export default function App() {
           <AIReviewScreen
             aiData={view.aiData}
             contextClientId={view.contextClientId}
-            onBack={() => setView({ type: 'dashboard' })}
+            onBack={() => {
+              if (view.contextClientId) {
+                setView({ type: 'client-view', clientId: view.contextClientId });
+              } else {
+                setView({ type: 'dashboard' });
+              }
+            }}
             onSaved={(draftInvoice) => {
               refreshData();
               showToast(`Draft invoice ${draftInvoice.invoiceNumber} saved to Drafts!`);
-              setView({ type: 'dashboard' });
+              if (view.contextClientId) {
+                setView({ type: 'client-view', clientId: view.contextClientId });
+              } else {
+                setView({ type: 'dashboard' });
+              }
             }}
           />
         )}
+      </div>
+    </div>
+  );
+}
+
+// Reusable In-App Confirmation / Alert Dialog for AI Studio preview
+interface ConfirmationDialogProps {
+  isOpen: boolean;
+  title?: string;
+  message: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  isDanger?: boolean;
+  isAlert?: boolean;
+  onConfirm: () => void;
+  onCancel?: () => void;
+}
+
+function ConfirmationDialog({
+  isOpen,
+  title,
+  message,
+  confirmLabel = 'Confirm',
+  cancelLabel = 'Cancel',
+  isDanger = false,
+  isAlert = false,
+  onConfirm,
+  onCancel,
+}: ConfirmationDialogProps) {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-[2px]">
+      <div className="bg-white w-full max-w-xs rounded-2xl p-5 shadow-2xl border border-slate-200/90 text-center space-y-4 animate-in fade-in zoom-in-95 duration-100">
+        {title && (
+          <h3 className="text-sm font-bold text-slate-900">{title}</h3>
+        )}
+        <p className="text-xs text-slate-600 leading-relaxed font-medium">{message}</p>
+        <div className={`grid gap-2 pt-1 ${isAlert ? 'grid-cols-1' : 'grid-cols-2'}`}>
+          {!isAlert && (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="w-full py-2 px-3 rounded-xl border border-slate-300 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 cursor-pointer transition-colors"
+            >
+              {cancelLabel}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onConfirm}
+            className={`w-full py-2 px-3 rounded-xl text-xs font-bold text-white cursor-pointer transition-colors shadow-sm ${
+              isDanger
+                ? 'bg-rose-600 hover:bg-rose-700'
+                : 'bg-[#0B1528] hover:bg-slate-800 text-yellow-400'
+            }`}
+          >
+            {confirmLabel}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -688,6 +774,7 @@ function AIInputBar({
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingElapsed, setProcessingElapsed] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [maxImagesAlert, setMaxImagesAlert] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -807,7 +894,7 @@ function AIInputBar({
     if (!files) return;
     const remainingSlots = 5 - images.length;
     if (remainingSlots <= 0) {
-      alert('You can select a maximum of 5 images.');
+      setMaxImagesAlert(true);
       return;
     }
 
@@ -1142,6 +1229,14 @@ function AIInputBar({
           )}
         </button>
       </div>
+
+      <ConfirmationDialog
+        isOpen={maxImagesAlert}
+        message="You can select a maximum of 5 images."
+        isAlert={true}
+        confirmLabel="OK"
+        onConfirm={() => setMaxImagesAlert(false)}
+      />
     </div>
   );
 }
@@ -1180,11 +1275,16 @@ function AIReviewScreen({
 
   // Client Selection State
   const [selectedClientId, setSelectedClientId] = useState<string>(
-    matchedClient ? matchedClient.id : 'create_draft_client'
+    contextClientId || (matchedClient ? matchedClient.id : 'create_draft_client')
   );
   const [draftClientName, setDraftClientName] = useState<string>(
     aiData.client_name || 'New Client'
   );
+  const [lineDeleteDialog, setLineDeleteDialog] = useState<{
+    isOpen: boolean;
+    itemId?: string;
+    description?: string;
+  }>({ isOpen: false });
 
   const [date, setDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [dueDate, setDueDate] = useState(() => {
@@ -1297,10 +1397,10 @@ function AIReviewScreen({
 
   // Save as DRAFT invoice, converting pounds to pence in code
   const handleSaveDraft = () => {
-    let finalClientId = selectedClientId;
+    let finalClientId = contextClientId || selectedClientId;
 
-    // Create draft client if user chose "create_draft_client"
-    if (selectedClientId === 'create_draft_client') {
+    // Create draft client if user chose "create_draft_client" and not started from client page
+    if (!contextClientId && selectedClientId === 'create_draft_client') {
       const newDraftClient = TradePayDB.saveClient({
         name: draftClientName.trim() || 'New Client (from voice/receipt)',
         phone: '',
@@ -1379,53 +1479,61 @@ function AIReviewScreen({
         {/* Client Selection & Match Card */}
         <div
           className={`bg-white rounded-2xl p-4 border shadow-sm transition-all ${
-            isClientUncertain ? 'border-amber-400 bg-amber-50/20' : 'border-slate-200/90'
+            !contextClientId && isClientUncertain ? 'border-amber-400 bg-amber-50/20' : 'border-slate-200/90'
           }`}
         >
           <div className="flex items-center justify-between mb-1.5">
             <div className="flex items-center gap-1.5">
               <label className="text-xs font-bold text-slate-800">Assigned Client</label>
-              {isClientUncertain && (
+              {!contextClientId && isClientUncertain && (
                 <span className="text-[10px] font-bold px-2 py-0.2 rounded-full bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-1">
                   <AlertCircle className="w-2.5 h-2.5" /> Please confirm
                 </span>
               )}
             </div>
-            {matchedClient && (
+            {!contextClientId && matchedClient && (
               <span className="text-[10px] text-emerald-700 font-bold flex items-center gap-1">
                 <CheckCircle2 className="w-3 h-3" /> Matched: {matchedClient.name}
               </span>
             )}
           </div>
 
-          <select
-            value={selectedClientId}
-            onChange={(e) => setSelectedClientId(e.target.value)}
-            className="w-full text-xs p-2.5 rounded-xl border border-slate-200 bg-white font-medium focus:outline-none focus:border-yellow-400"
-          >
-            <option value="create_draft_client">
-              + Create draft client: "{draftClientName}" (please confirm details)
-            </option>
-            {existingClients.map((c) => (
-              <option key={c.id} value={c.id}>
-                Use existing: {c.name} {c.address ? `(${c.address})` : ''}
-              </option>
-            ))}
-          </select>
-
-          {selectedClientId === 'create_draft_client' && (
-            <div className="mt-2.5">
-              <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                Draft Client Name:
-              </label>
-              <input
-                type="text"
-                value={draftClientName}
-                onChange={(e) => setDraftClientName(e.target.value)}
-                placeholder="Enter client name"
-                className="w-full text-xs p-2 rounded-xl border border-amber-300 bg-amber-50/50 font-bold text-slate-900"
-              />
+          {contextClientId ? (
+            <div className="w-full text-xs p-2.5 rounded-xl border border-slate-200 bg-slate-50 font-semibold text-slate-800">
+              {existingClients.find((c) => c.id === contextClientId)?.name || 'Client'}
             </div>
+          ) : (
+            <>
+              <select
+                value={selectedClientId}
+                onChange={(e) => setSelectedClientId(e.target.value)}
+                className="w-full text-xs p-2.5 rounded-xl border border-slate-200 bg-white font-medium focus:outline-none focus:border-yellow-400"
+              >
+                <option value="create_draft_client">
+                  + Create draft client: "{draftClientName}" (please confirm details)
+                </option>
+                {existingClients.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    Use existing: {c.name} {c.address ? `(${c.address})` : ''}
+                  </option>
+                ))}
+              </select>
+
+              {selectedClientId === 'create_draft_client' && (
+                <div className="mt-2.5">
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                    Draft Client Name:
+                  </label>
+                  <input
+                    type="text"
+                    value={draftClientName}
+                    onChange={(e) => setDraftClientName(e.target.value)}
+                    placeholder="Enter client name"
+                    className="w-full text-xs p-2 rounded-xl border border-amber-300 bg-amber-50/50 font-bold text-slate-900"
+                  />
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -1491,7 +1599,13 @@ function AIReviewScreen({
                     {items.length > 1 && (
                       <button
                         type="button"
-                        onClick={() => removeItem(item.id)}
+                        onClick={() =>
+                          setLineDeleteDialog({
+                            isOpen: true,
+                            itemId: item.id,
+                            description: item.description,
+                          })
+                        }
                         className="text-slate-400 hover:text-rose-600 transition-colors ml-auto"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -1672,6 +1786,25 @@ function AIReviewScreen({
           </p>
         </div>
       </div>
+
+      <ConfirmationDialog
+        isOpen={lineDeleteDialog.isOpen}
+        message={
+          lineDeleteDialog.description
+            ? `Delete "${lineDeleteDialog.description}"?`
+            : 'Delete this line item?'
+        }
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        isDanger={true}
+        onCancel={() => setLineDeleteDialog({ isOpen: false })}
+        onConfirm={() => {
+          if (lineDeleteDialog.itemId) {
+            removeItem(lineDeleteDialog.itemId);
+          }
+          setLineDeleteDialog({ isOpen: false });
+        }}
+      />
     </div>
   );
 }
@@ -1700,6 +1833,7 @@ function ClientDetailView({
 }) {
   const client = TradePayDB.getClientById(clientId);
   const clientInvoices = TradePayDB.getInvoicesForClient(clientId);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
 
   if (!client) {
     return (
@@ -1729,12 +1863,20 @@ function ClientDetailView({
           <ArrowLeft className="w-4 h-4" /> Back
         </button>
         <h2 className="text-sm font-bold text-yellow-400">Client Profile</h2>
-        <button
-          onClick={onEditClient}
-          className="text-xs font-semibold px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white cursor-pointer"
-        >
-          Edit
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={onEditClient}
+            className="text-xs font-semibold px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white cursor-pointer"
+          >
+            Edit
+          </button>
+          <button
+            onClick={() => setShowDeleteModal(true)}
+            className="text-xs font-semibold px-3 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 cursor-pointer"
+          >
+            Delete
+          </button>
+        </div>
       </div>
 
       <div className="p-4 space-y-4">
@@ -1893,6 +2035,20 @@ function ClientDetailView({
           </div>
         </div>
       </div>
+
+      <ConfirmationDialog
+        isOpen={showDeleteModal}
+        message={`Delete ${client.name}? This also deletes their ${clientInvoices.length} invoices.`}
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        isDanger={true}
+        onCancel={() => setShowDeleteModal(false)}
+        onConfirm={() => {
+          TradePayDB.deleteClient(client.id);
+          onDataChange();
+          onBack();
+        }}
+      />
     </div>
   );
 }
@@ -2123,6 +2279,25 @@ function InvoiceEditorView({
 }) {
   const [currentInvoiceId, setCurrentInvoiceId] = useState<string | undefined>(invoiceId);
   const [invoiceVersion, setInvoiceVersion] = useState(0);
+
+  const [editorDialog, setEditorDialog] = useState<{
+    isOpen: boolean;
+    title?: string;
+    message: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    isDanger?: boolean;
+    isAlert?: boolean;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    message: '',
+    onConfirm: () => {},
+  });
+
+  const closeEditorDialog = () => {
+    setEditorDialog((prev) => ({ ...prev, isOpen: false }));
+  };
 
   const currentInvoice = useMemo(() => {
     return currentInvoiceId ? TradePayDB.getInvoiceById(currentInvoiceId) : undefined;
@@ -2584,10 +2759,31 @@ function InvoiceEditorView({
     setItems(items.filter((it) => it.id !== id));
   };
 
+  const promptRemoveLine = (id: string, desc?: string) => {
+    if (items.length <= 1) return;
+    setEditorDialog({
+      isOpen: true,
+      message: desc ? `Delete "${desc}"?` : 'Delete this line item?',
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      isDanger: true,
+      onConfirm: () => {
+        setItems((prev) => prev.filter((it) => it.id !== id));
+        closeEditorDialog();
+      },
+    });
+  };
+
   // Helper to compile and save current form state
   const saveCurrentState = (targetStatus: InvoiceStatus): Invoice | null => {
     if (!clientId) {
-      alert('Please select or add a client first.');
+      setEditorDialog({
+        isOpen: true,
+        message: 'Please select or add a client first.',
+        isAlert: true,
+        confirmLabel: 'OK',
+        onConfirm: closeEditorDialog,
+      });
       return null;
     }
 
@@ -2649,7 +2845,13 @@ function InvoiceEditorView({
     e.preventDefault();
     const amountPence = poundsToPence(manualAmountPounds);
     if (amountPence <= 0) {
-      alert('Please enter a valid payment amount greater than £0.');
+      setEditorDialog({
+        isOpen: true,
+        message: 'Please enter a valid payment amount greater than £0.',
+        isAlert: true,
+        confirmLabel: 'OK',
+        onConfirm: closeEditorDialog,
+      });
       return;
     }
 
@@ -2674,16 +2876,30 @@ function InvoiceEditorView({
   // Delete recorded payment
   const handleDeletePayment = (paymentId: string) => {
     if (!currentInvoiceId) return;
-    if (confirm('Delete this payment record? The balance due and status will be recalculated.')) {
-      TradePayDB.deletePayment(currentInvoiceId, paymentId);
-      setInvoiceVersion((v) => v + 1);
-    }
+    setEditorDialog({
+      isOpen: true,
+      message: 'Delete this payment record? The balance due and status will be recalculated.',
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      isDanger: true,
+      onConfirm: () => {
+        TradePayDB.deletePayment(currentInvoiceId, paymentId);
+        setInvoiceVersion((v) => v + 1);
+        closeEditorDialog();
+      },
+    });
   };
 
   // Initiate PayPal Checkout
   const handlePayWithPayPal = async () => {
     if (liveTotals.balanceDue <= 0) {
-      alert('Invoice has no balance due to pay.');
+      setEditorDialog({
+        isOpen: true,
+        message: 'Invoice has no balance due to pay.',
+        isAlert: true,
+        confirmLabel: 'OK',
+        onConfirm: closeEditorDialog,
+      });
       return;
     }
 
@@ -2772,10 +2988,18 @@ function InvoiceEditorView({
         {currentInvoiceId ? (
           <button
             onClick={() => {
-              if (confirm('Delete this invoice?')) {
-                TradePayDB.deleteInvoice(currentInvoiceId);
-                onDelete();
-              }
+              setEditorDialog({
+                isOpen: true,
+                message: 'Delete this invoice?',
+                confirmLabel: 'Delete',
+                cancelLabel: 'Cancel',
+                isDanger: true,
+                onConfirm: () => {
+                  TradePayDB.deleteInvoice(currentInvoiceId);
+                  closeEditorDialog();
+                  onDelete();
+                },
+              });
             }}
             className="text-xs text-rose-400 hover:text-rose-300 p-1 cursor-pointer"
             title="Delete invoice"
@@ -2811,6 +3035,10 @@ function InvoiceEditorView({
               >
                 No clients yet. Tap here to add a client first.
               </button>
+            ) : prefilledClientId ? (
+              <div className="w-full text-xs p-2.5 rounded-xl border border-slate-200 bg-slate-50 font-semibold text-slate-800">
+                {clients.find((c) => c.id === clientId)?.name || 'Client'}
+              </div>
             ) : (
               <select
                 value={clientId}
@@ -2918,7 +3146,7 @@ function InvoiceEditorView({
                     {items.length > 1 && (
                       <button
                         type="button"
-                        onClick={() => removeItem(item.id)}
+                        onClick={() => promptRemoveLine(item.id, item.description)}
                         className="text-slate-400 hover:text-rose-600 transition-colors ml-auto"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -3482,6 +3710,18 @@ function InvoiceEditorView({
           </div>
         </div>
       )}
+
+      <ConfirmationDialog
+        isOpen={editorDialog.isOpen}
+        title={editorDialog.title}
+        message={editorDialog.message}
+        confirmLabel={editorDialog.confirmLabel}
+        cancelLabel={editorDialog.cancelLabel}
+        isDanger={editorDialog.isDanger}
+        isAlert={editorDialog.isAlert}
+        onConfirm={editorDialog.onConfirm}
+        onCancel={closeEditorDialog}
+      />
     </div>
   );
 }

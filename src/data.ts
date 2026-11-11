@@ -385,6 +385,8 @@ export const TradePayDB = {
   deleteClient(id: string): void {
     const clients = this.getClients().filter((c) => c.id !== id);
     saveToStorage(STORAGE_KEYS.CLIENTS, clients);
+    const invoices = this.getInvoices().filter((inv) => inv.clientId !== id);
+    saveToStorage(STORAGE_KEYS.INVOICES, invoices);
   },
 
   // Invoices
