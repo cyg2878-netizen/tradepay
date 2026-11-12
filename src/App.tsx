@@ -68,9 +68,11 @@ interface AIParseResponse {
 
 type ViewMode =
   | { type: 'dashboard' }
-  | { type: 'client-view'; clientId: string }
+  | { type: 'all-clients' }
+  | { type: 'all-invoices' }
+  | { type: 'client-view'; clientId: string; fromView?: 'dashboard' | 'all-clients' }
   | { type: 'client-form'; clientId?: string }
-  | { type: 'invoice-form'; invoiceId?: string; prefilledClientId?: string }
+  | { type: 'invoice-form'; invoiceId?: string; prefilledClientId?: string; fromView?: 'dashboard' | 'all-invoices' }
   | {
       type: 'ai-review';
       aiData: AIParseResponse;
@@ -85,10 +87,108 @@ interface UploadedImage {
   previewUrl: string;
 }
 
+export type ClientSortOption = 'a-to-z' | 'z-to-a' | 'newest-added' | 'highest-balance';
+export type InvoiceSortOption =
+  | 'newest'
+  | 'oldest'
+  | 'number-high-to-low'
+  | 'number-low-to-high'
+  | 'unpaid-first'
+  | 'overdue-first';
+
+function sortClientsList(
+  clientList: Client[],
+  allInvoices: Invoice[],
+  sortOption: ClientSortOption
+): Client[] {
+  const getOutstanding = (clientId: string) => {
+    const invs = allInvoices.filter((i) => i.clientId === clientId);
+    const total = invs.reduce((sum, inv) => sum + (Number(inv.total) || 0), 0);
+    const paid = invs.reduce((sum, inv) => {
+      const pTotal = (inv.payments || []).reduce((pSum, p) => pSum + (Number(p.amount) || 0), 0);
+      return sum + pTotal;
+    }, 0);
+    return Math.max(0, total - paid);
+  };
+
+  return [...clientList].sort((a, b) => {
+    switch (sortOption) {
+      case 'a-to-z':
+        return a.name.localeCompare(b.name);
+      case 'z-to-a':
+        return b.name.localeCompare(a.name);
+      case 'newest-added':
+        return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+      case 'highest-balance':
+        return getOutstanding(b.id) - getOutstanding(a.id) || a.name.localeCompare(b.name);
+      default:
+        return 0;
+    }
+  });
+}
+
+function sortInvoicesList(invoiceList: Invoice[], sortOption: InvoiceSortOption): Invoice[] {
+  const todayStr = new Date().toISOString().split('T')[0];
+
+  const parseNum = (str: string) => {
+    const m = str.match(/\d+/);
+    return m ? parseInt(m[0], 10) : 0;
+  };
+
+  return [...invoiceList].sort((a, b) => {
+    switch (sortOption) {
+      case 'newest':
+        return (
+          new Date(b.date || b.createdAt || 0).getTime() -
+            new Date(a.date || a.createdAt || 0).getTime() ||
+          parseNum(b.invoiceNumber) - parseNum(a.invoiceNumber)
+        );
+      case 'oldest':
+        return (
+          new Date(a.date || a.createdAt || 0).getTime() -
+            new Date(b.date || b.createdAt || 0).getTime() ||
+          parseNum(a.invoiceNumber) - parseNum(b.invoiceNumber)
+        );
+      case 'number-high-to-low':
+        return (
+          parseNum(b.invoiceNumber) - parseNum(a.invoiceNumber) ||
+          b.invoiceNumber.localeCompare(a.invoiceNumber)
+        );
+      case 'number-low-to-high':
+        return (
+          parseNum(a.invoiceNumber) - parseNum(b.invoiceNumber) ||
+          a.invoiceNumber.localeCompare(b.invoiceNumber)
+        );
+      case 'unpaid-first': {
+        const aUnpaid = a.status !== 'paid' && a.balanceDue > 0 ? 1 : 0;
+        const bUnpaid = b.status !== 'paid' && b.balanceDue > 0 ? 1 : 0;
+        return (
+          bUnpaid - aUnpaid ||
+          new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime()
+        );
+      }
+      case 'overdue-first': {
+        const aOverdue =
+          a.status !== 'paid' && a.balanceDue > 0 && a.dueDate && a.dueDate < todayStr ? 1 : 0;
+        const bOverdue =
+          b.status !== 'paid' && b.balanceDue > 0 && b.dueDate && b.dueDate < todayStr ? 1 : 0;
+        return (
+          bOverdue - aOverdue ||
+          new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime()
+        );
+      }
+      default:
+        return 0;
+    }
+  });
+}
+
 export default function App() {
   const [view, setView] = useState<ViewMode>({ type: 'dashboard' });
   const [searchQuery, setSearchQuery] = useState('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [clientSort, setClientSort] = useState<ClientSortOption>('a-to-z');
+  const [invoiceSort, setInvoiceSort] = useState<InvoiceSortOption>('newest');
 
   // Trigger re-renders when data updates
   const [dataVersion, setDataVersion] = useState(0);
@@ -119,32 +219,38 @@ export default function App() {
     [invoices]
   );
 
-  // Search filtering
+  // Search filtering & sorting
   const filteredClients = useMemo(() => {
-    if (!searchQuery.trim()) return clients;
-    const q = searchQuery.toLowerCase();
-    return clients.filter(
-      (c) =>
-        c.name.toLowerCase().includes(q) ||
-        c.email.toLowerCase().includes(q) ||
-        c.phone.toLowerCase().includes(q) ||
-        c.address.toLowerCase().includes(q)
-    );
-  }, [clients, searchQuery]);
+    let list = clients;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(
+        (c) =>
+          c.name.toLowerCase().includes(q) ||
+          c.email.toLowerCase().includes(q) ||
+          c.phone.toLowerCase().includes(q) ||
+          c.address.toLowerCase().includes(q)
+      );
+    }
+    return sortClientsList(list, invoices, clientSort);
+  }, [clients, invoices, searchQuery, clientSort]);
 
   const filteredInvoices = useMemo(() => {
-    if (!searchQuery.trim()) return invoices;
-    const q = searchQuery.toLowerCase();
-    return invoices.filter((inv) => {
-      const client = clients.find((c) => c.id === inv.clientId);
-      const clientName = client ? client.name.toLowerCase() : '';
-      return (
-        inv.invoiceNumber.toLowerCase().includes(q) ||
-        clientName.includes(q) ||
-        inv.status.toLowerCase().includes(q)
-      );
-    });
-  }, [invoices, clients, searchQuery]);
+    let list = invoices;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter((inv) => {
+        const client = clients.find((c) => c.id === inv.clientId);
+        const clientName = client ? client.name.toLowerCase() : '';
+        return (
+          inv.invoiceNumber.toLowerCase().includes(q) ||
+          clientName.includes(q) ||
+          inv.status.toLowerCase().includes(q)
+        );
+      });
+    }
+    return sortInvoicesList(list, invoiceSort);
+  }, [invoices, clients, searchQuery, invoiceSort]);
 
   const getStatusBadge = (status: InvoiceStatus) => {
     switch (status) {
@@ -264,9 +370,9 @@ export default function App() {
 
             {/* Dashboard Cards Grid */}
             <main className="p-4 space-y-4">
-              {/* 1. Drafts Card (Now Functional with AI & Manual Drafts) */}
-              <section className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden">
-                <div className="px-4 py-3 bg-amber-50/50 border-b border-amber-200/50 flex items-center justify-between">
+              {/* 1. Drafts Card */}
+              <section className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden flex flex-col">
+                <div className="px-4 py-3 bg-amber-50/50 border-b border-amber-200/50 flex items-center justify-between shrink-0">
                   <div className="flex items-center gap-2">
                     <FileClock className="w-4 h-4 text-amber-700" />
                     <h2 className="font-bold text-sm text-slate-900">Drafts</h2>
@@ -282,10 +388,10 @@ export default function App() {
                   </button>
                 </div>
 
-                <div className="divide-y divide-slate-100">
+                <div className="max-h-[292px] overflow-y-auto divide-y divide-slate-100">
                   {draftInvoices.length === 0 ? (
                     <div className="p-4 text-center text-xs text-slate-400">
-                      No drafts pending. Use the AI bar above to record a voice note or snap receipts.
+                      No drafts yet
                     </div>
                   ) : (
                     draftInvoices.map((inv) => {
@@ -329,27 +435,48 @@ export default function App() {
               </section>
 
               {/* 2. Invoices Card */}
-              <section className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden">
-                <div className="px-4 py-3 bg-slate-50/80 border-b border-slate-200/70 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <FileText className="w-4 h-4 text-[#0B1528]" />
-                    <h2 className="font-bold text-sm text-slate-900">Invoices</h2>
-                    <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-yellow-400/30 text-slate-900 border border-yellow-400/40">
+              <section className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden flex flex-col">
+                <div className="px-4 py-3 bg-slate-50/80 border-b border-slate-200/70 flex items-center justify-between gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setView({ type: 'all-invoices' })}
+                    className="flex items-center gap-2 hover:opacity-80 transition-opacity cursor-pointer group text-left min-w-0"
+                    title="View all invoices"
+                  >
+                    <FileText className="w-4 h-4 text-[#0B1528] shrink-0" />
+                    <h2 className="font-bold text-sm text-slate-900 group-hover:underline truncate">Invoices</h2>
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-yellow-400/30 text-slate-900 border border-yellow-400/40 shrink-0">
                       {invoices.length}
                     </span>
-                  </div>
-                  <button
-                    onClick={() => setView({ type: 'invoice-form' })}
-                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#0B1528] text-yellow-400 text-xs font-bold hover:bg-slate-800 transition-colors cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" /> New
+                    <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-700 shrink-0" />
                   </button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <select
+                      value={invoiceSort}
+                      onChange={(e) => setInvoiceSort(e.target.value as InvoiceSortOption)}
+                      className="text-[11px] font-medium text-slate-600 bg-white border border-slate-200 rounded-lg px-2 py-1 focus:outline-none focus:border-yellow-400 cursor-pointer"
+                      aria-label="Sort invoices"
+                    >
+                      <option value="newest">Newest</option>
+                      <option value="oldest">Oldest</option>
+                      <option value="number-high-to-low">Number high to low</option>
+                      <option value="number-low-to-high">Number low to high</option>
+                      <option value="unpaid-first">Unpaid first</option>
+                      <option value="overdue-first">Overdue first</option>
+                    </select>
+                    <button
+                      onClick={() => setView({ type: 'invoice-form' })}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#0B1528] text-yellow-400 text-xs font-bold hover:bg-slate-800 transition-colors cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> New
+                    </button>
+                  </div>
                 </div>
 
-                <div className="divide-y divide-slate-100">
+                <div className="max-h-[292px] overflow-y-auto divide-y divide-slate-100">
                   {filteredInvoices.length === 0 ? (
-                    <div className="p-5 text-center text-xs text-slate-400">
-                      No invoices found. Tap "+ New" to create your first invoice.
+                    <div className="p-4 text-center text-xs text-slate-400">
+                      No invoices yet
                     </div>
                   ) : (
                     filteredInvoices.map((inv) => {
@@ -392,27 +519,46 @@ export default function App() {
               </section>
 
               {/* 3. Clients Card */}
-              <section className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden">
-                <div className="px-4 py-3 bg-slate-50/80 border-b border-slate-200/70 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <User className="w-4 h-4 text-[#0B1528]" />
-                    <h2 className="font-bold text-sm text-slate-900">Clients</h2>
-                    <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-200 text-slate-800">
+              <section className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden flex flex-col">
+                <div className="px-4 py-3 bg-slate-50/80 border-b border-slate-200/70 flex items-center justify-between gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setView({ type: 'all-clients' })}
+                    className="flex items-center gap-2 hover:opacity-80 transition-opacity cursor-pointer group text-left min-w-0"
+                    title="View all clients"
+                  >
+                    <User className="w-4 h-4 text-[#0B1528] shrink-0" />
+                    <h2 className="font-bold text-sm text-slate-900 group-hover:underline truncate">Clients</h2>
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-200 text-slate-800 shrink-0">
                       {clients.length}
                     </span>
-                  </div>
-                  <button
-                    onClick={() => setView({ type: 'client-form' })}
-                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#0B1528] text-yellow-400 text-xs font-bold hover:bg-slate-800 transition-colors cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" /> Add
+                    <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-700 shrink-0" />
                   </button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <select
+                      value={clientSort}
+                      onChange={(e) => setClientSort(e.target.value as ClientSortOption)}
+                      className="text-[11px] font-medium text-slate-600 bg-white border border-slate-200 rounded-lg px-2 py-1 focus:outline-none focus:border-yellow-400 cursor-pointer"
+                      aria-label="Sort clients"
+                    >
+                      <option value="a-to-z">A to Z</option>
+                      <option value="z-to-a">Z to A</option>
+                      <option value="newest">Newest added</option>
+                      <option value="highest-balance">Highest balance owed</option>
+                    </select>
+                    <button
+                      onClick={() => setView({ type: 'client-form' })}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#0B1528] text-yellow-400 text-xs font-bold hover:bg-slate-800 transition-colors cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Add
+                    </button>
+                  </div>
                 </div>
 
-                <div className="divide-y divide-slate-100">
+                <div className="max-h-[292px] overflow-y-auto divide-y divide-slate-100">
                   {filteredClients.length === 0 ? (
-                    <div className="p-5 text-center text-xs text-slate-400">
-                      No clients found. Tap "+ Add" to add a client.
+                    <div className="p-4 text-center text-xs text-slate-400">
+                      No clients yet
                     </div>
                   ) : (
                     filteredClients.map((c) => {
@@ -480,8 +626,8 @@ export default function App() {
               </section>
 
               {/* 4. Projects Card (Placeholder) */}
-              <section className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden">
-                <div className="px-4 py-3 bg-slate-50/80 border-b border-slate-200/70 flex items-center justify-between">
+              <section className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden flex flex-col">
+                <div className="px-4 py-3 bg-slate-50/80 border-b border-slate-200/70 flex items-center justify-between shrink-0">
                   <div className="flex items-center gap-2">
                     <Building2 className="w-4 h-4 text-slate-600" />
                     <h2 className="font-bold text-sm text-slate-900">Projects</h2>
@@ -502,8 +648,8 @@ export default function App() {
               </section>
 
               {/* 5. Jobs Card (Placeholder) */}
-              <section className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden">
-                <div className="px-4 py-3 bg-slate-50/80 border-b border-slate-200/70 flex items-center justify-between">
+              <section className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden flex flex-col">
+                <div className="px-4 py-3 bg-slate-50/80 border-b border-slate-200/70 flex items-center justify-between shrink-0">
                   <div className="flex items-center gap-2">
                     <Briefcase className="w-4 h-4 text-slate-600" />
                     <h2 className="font-bold text-sm text-slate-900">Jobs</h2>
@@ -524,8 +670,8 @@ export default function App() {
               </section>
 
               {/* 6. Quotes Card (Placeholder) */}
-              <section className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden">
-                <div className="px-4 py-3 bg-slate-50/80 border-b border-slate-200/70 flex items-center justify-between">
+              <section className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden flex flex-col">
+                <div className="px-4 py-3 bg-slate-50/80 border-b border-slate-200/70 flex items-center justify-between shrink-0">
                   <div className="flex items-center gap-2">
                     <QuoteIcon className="w-4 h-4 text-slate-600" />
                     <h2 className="font-bold text-sm text-slate-900">Quotes</h2>
@@ -548,11 +694,48 @@ export default function App() {
           </div>
         )}
 
+        {/* ----------------- ALL CLIENTS VIEW (TASK 7) ----------------- */}
+        {view.type === 'all-clients' && (
+          <AllClientsView
+            clients={clients}
+            invoices={invoices}
+            sort={clientSort}
+            onSortChange={setClientSort}
+            onBack={() => setView({ type: 'dashboard' })}
+            onSelectClient={(clientId) =>
+              setView({ type: 'client-view', clientId, fromView: 'all-clients' })
+            }
+            onAddClient={() => setView({ type: 'client-form' })}
+          />
+        )}
+
+        {/* ----------------- ALL INVOICES VIEW (TASK 7) ----------------- */}
+        {view.type === 'all-invoices' && (
+          <AllInvoicesView
+            invoices={invoices}
+            clients={clients}
+            sort={invoiceSort}
+            onSortChange={setInvoiceSort}
+            onBack={() => setView({ type: 'dashboard' })}
+            onSelectInvoice={(invoiceId) =>
+              setView({ type: 'invoice-form', invoiceId, fromView: 'all-invoices' })
+            }
+            onCreateInvoice={() => setView({ type: 'invoice-form' })}
+            getStatusBadge={getStatusBadge}
+          />
+        )}
+
         {/* ----------------- CLIENT VIEW ----------------- */}
         {view.type === 'client-view' && (
           <ClientDetailView
             clientId={view.clientId}
-            onBack={() => setView({ type: 'dashboard' })}
+            onBack={() => {
+              if (view.fromView === 'all-clients') {
+                setView({ type: 'all-clients' });
+              } else {
+                setView({ type: 'dashboard' });
+              }
+            }}
             onEditClient={() => setView({ type: 'client-form', clientId: view.clientId })}
             onCreateInvoice={() =>
               setView({ type: 'invoice-form', prefilledClientId: view.clientId })
@@ -593,6 +776,8 @@ export default function App() {
             onBack={() => {
               if (view.prefilledClientId) {
                 setView({ type: 'client-view', clientId: view.prefilledClientId });
+              } else if (view.fromView === 'all-invoices') {
+                setView({ type: 'all-invoices' });
               } else {
                 setView({ type: 'dashboard' });
               }
@@ -602,6 +787,8 @@ export default function App() {
               showToast(`Invoice ${savedInvoice.invoiceNumber} saved!`);
               if (view.prefilledClientId) {
                 setView({ type: 'client-view', clientId: view.prefilledClientId });
+              } else if (view.fromView === 'all-invoices') {
+                setView({ type: 'all-invoices' });
               } else {
                 setView({ type: 'dashboard' });
               }
@@ -611,6 +798,8 @@ export default function App() {
               showToast('Invoice deleted');
               if (view.prefilledClientId) {
                 setView({ type: 'client-view', clientId: view.prefilledClientId });
+              } else if (view.fromView === 'all-invoices') {
+                setView({ type: 'all-invoices' });
               } else {
                 setView({ type: 'dashboard' });
               }
@@ -1805,6 +1994,326 @@ function AIReviewScreen({
           setLineDeleteDialog({ isOpen: false });
         }}
       />
+    </div>
+  );
+}
+
+// ==========================================
+// TASK 7: FULL-PAGE ALL CLIENTS VIEW
+// ==========================================
+function AllClientsView({
+  clients,
+  invoices,
+  sort,
+  onSortChange,
+  onBack,
+  onSelectClient,
+  onAddClient,
+}: {
+  clients: Client[];
+  invoices: Invoice[];
+  sort: ClientSortOption;
+  onSortChange: (sort: ClientSortOption) => void;
+  onBack: () => void;
+  onSelectClient: (clientId: string) => void;
+  onAddClient: () => void;
+}) {
+  const [search, setSearch] = useState('');
+
+  const filteredClients = useMemo(() => {
+    let list = clients;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter((c) => {
+        const matchName = c.name.toLowerCase().includes(q);
+        const matchPhone = c.phone ? c.phone.toLowerCase().includes(q) : false;
+        const matchEmail = c.email ? c.email.toLowerCase().includes(q) : false;
+        return matchName || matchPhone || matchEmail;
+      });
+    }
+    return sortClientsList(list, invoices, sort);
+  }, [clients, invoices, search, sort]);
+
+  return (
+    <div className="flex-1 flex flex-col pb-12">
+      {/* Top Bar with Back, Title & Search */}
+      <div className="bg-[#0B1528] text-white px-4 py-4 rounded-b-2xl shadow-sm space-y-3 sticky top-0 z-20">
+        <div className="flex items-center justify-between gap-2">
+          <button
+            onClick={onBack}
+            className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 hover:text-white cursor-pointer shrink-0"
+          >
+            <ArrowLeft className="w-4 h-4" /> Back
+          </button>
+          <div className="flex items-center gap-2 min-w-0">
+            <h1 className="text-sm font-bold text-yellow-400 truncate">Clients</h1>
+            <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-800 text-slate-200 border border-slate-700 shrink-0">
+              {clients.length}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <select
+              value={sort}
+              onChange={(e) => onSortChange(e.target.value as ClientSortOption)}
+              className="text-[11px] font-medium text-slate-200 bg-[#14233D] border border-slate-700/60 rounded-lg px-2 py-1 focus:outline-none focus:border-yellow-400 cursor-pointer"
+              aria-label="Sort clients"
+            >
+              <option value="a-to-z">A to Z</option>
+              <option value="z-to-a">Z to A</option>
+              <option value="newest">Newest added</option>
+              <option value="highest-balance">Highest balance owed</option>
+            </select>
+            <button
+              onClick={onAddClient}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-yellow-400 text-slate-950 text-xs font-bold hover:bg-yellow-300 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" /> Add
+            </button>
+          </div>
+        </div>
+
+        {/* Search Bar: name, phone, email */}
+        <div className="relative">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text"
+            placeholder="Search by name, phone, or email..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full bg-[#14233D] text-white placeholder-slate-400 text-xs rounded-xl pl-10 pr-8 py-2.5 border border-slate-700/60 focus:outline-none focus:border-yellow-400 transition-colors"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* List */}
+      <div className="p-4">
+        <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden divide-y divide-slate-100">
+          {filteredClients.length === 0 ? (
+            <div className="p-6 text-center text-xs text-slate-400">
+              {search ? 'No clients match your search.' : 'No clients found.'}
+            </div>
+          ) : (
+            filteredClients.map((c) => {
+              const clientInvoices = invoices.filter((i) => i.clientId === c.id);
+              const totalInvoiced = clientInvoices.reduce(
+                (sum, inv) => sum + (Number(inv.total) || 0),
+                0
+              );
+              const totalPaid = clientInvoices.reduce((sum, inv) => {
+                const paid = (inv.payments || []).reduce(
+                  (pSum, p) => pSum + (Number(p.amount) || 0),
+                  0
+                );
+                return sum + paid;
+              }, 0);
+              const outstanding = Math.max(0, totalInvoiced - totalPaid);
+              const isZero = outstanding === 0;
+
+              return (
+                <div
+                  key={c.id}
+                  onClick={() => onSelectClient(c.id)}
+                  className="p-3.5 hover:bg-slate-50/80 cursor-pointer flex items-center justify-between transition-colors"
+                >
+                  <div className="min-w-0 flex-1 pr-3">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="font-bold text-xs text-slate-900 truncate">
+                        {c.name}
+                      </h3>
+                      <span
+                        className={`inline-flex items-center text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                          isZero
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : 'bg-amber-50 text-amber-800 border-amber-200'
+                        }`}
+                      >
+                        {formatPenceToGBP(outstanding)}
+                      </span>
+                      {c.status === 'please_confirm' && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-bold border border-amber-200">
+                          Confirm Details
+                        </span>
+                      )}
+                      {c.contacts.length > 0 && (
+                        <span className="text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.2 rounded font-medium">
+                          +{c.contacts.length}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-500 truncate mt-0.5">
+                      {c.phone || c.email || c.address || 'No phone/email'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-slate-400 shrink-0">
+                    <span className="text-[11px] font-semibold text-slate-600">
+                      {clientInvoices.length} {clientInvoices.length === 1 ? 'inv' : 'invs'}
+                    </span>
+                    <ChevronRight className="w-4 h-4" />
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// TASK 7: FULL-PAGE ALL INVOICES VIEW
+// ==========================================
+function AllInvoicesView({
+  invoices,
+  clients,
+  sort,
+  onSortChange,
+  onBack,
+  onSelectInvoice,
+  onCreateInvoice,
+  getStatusBadge,
+}: {
+  invoices: Invoice[];
+  clients: Client[];
+  sort: InvoiceSortOption;
+  onSortChange: (sort: InvoiceSortOption) => void;
+  onBack: () => void;
+  onSelectInvoice: (invoiceId: string) => void;
+  onCreateInvoice: () => void;
+  getStatusBadge: (status: InvoiceStatus) => React.ReactNode;
+}) {
+  const [search, setSearch] = useState('');
+
+  const filteredInvoices = useMemo(() => {
+    let list = invoices;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter((inv) => {
+        const matchNum = inv.invoiceNumber.toLowerCase().includes(q);
+        const client = clients.find((c) => c.id === inv.clientId);
+        const matchClient = client ? client.name.toLowerCase().includes(q) : false;
+        const matchStatus = inv.status.toLowerCase().includes(q);
+        return matchNum || matchClient || matchStatus;
+      });
+    }
+    return sortInvoicesList(list, sort);
+  }, [invoices, clients, search, sort]);
+
+  return (
+    <div className="flex-1 flex flex-col pb-12">
+      {/* Top Bar with Back, Title & Search */}
+      <div className="bg-[#0B1528] text-white px-4 py-4 rounded-b-2xl shadow-sm space-y-3 sticky top-0 z-20">
+        <div className="flex items-center justify-between gap-2">
+          <button
+            onClick={onBack}
+            className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 hover:text-white cursor-pointer shrink-0"
+          >
+            <ArrowLeft className="w-4 h-4" /> Back
+          </button>
+          <div className="flex items-center gap-2 min-w-0">
+            <h1 className="text-sm font-bold text-yellow-400 truncate">Invoices</h1>
+            <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-800 text-slate-200 border border-slate-700 shrink-0">
+              {invoices.length}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <select
+              value={sort}
+              onChange={(e) => onSortChange(e.target.value as InvoiceSortOption)}
+              className="text-[11px] font-medium text-slate-200 bg-[#14233D] border border-slate-700/60 rounded-lg px-2 py-1 focus:outline-none focus:border-yellow-400 cursor-pointer"
+              aria-label="Sort invoices"
+            >
+              <option value="newest">Newest</option>
+              <option value="oldest">Oldest</option>
+              <option value="number-high-to-low">Number high to low</option>
+              <option value="number-low-to-high">Number low to high</option>
+              <option value="unpaid-first">Unpaid first</option>
+              <option value="overdue-first">Overdue first</option>
+            </select>
+            <button
+              onClick={onCreateInvoice}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-yellow-400 text-slate-950 text-xs font-bold hover:bg-yellow-300 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" /> New
+            </button>
+          </div>
+        </div>
+
+        {/* Search Bar: number, client name, status */}
+        <div className="relative">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text"
+            placeholder="Search by invoice number, client, or status..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full bg-[#14233D] text-white placeholder-slate-400 text-xs rounded-xl pl-10 pr-8 py-2.5 border border-slate-700/60 focus:outline-none focus:border-yellow-400 transition-colors"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* List */}
+      <div className="p-4">
+        <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden divide-y divide-slate-100">
+          {filteredInvoices.length === 0 ? (
+            <div className="p-6 text-center text-xs text-slate-400">
+              {search ? 'No invoices match your search.' : 'No invoices found.'}
+            </div>
+          ) : (
+            filteredInvoices.map((inv) => {
+              const client = clients.find((c) => c.id === inv.clientId);
+              return (
+                <div
+                  key={inv.id}
+                  onClick={() => onSelectInvoice(inv.id)}
+                  className="p-3.5 hover:bg-slate-50/80 cursor-pointer flex items-center justify-between transition-colors"
+                >
+                  <div className="min-w-0 flex-1 pr-3">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-bold text-xs text-[#0B1528]">
+                        {inv.invoiceNumber}
+                      </span>
+                      {getStatusBadge(inv.status)}
+                    </div>
+                    <p className="text-xs font-medium text-slate-700 truncate">
+                      {client ? client.name : 'Unknown Client'}
+                    </p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Due: {inv.dueDate || 'Upon receipt'}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-bold text-sm text-slate-900">
+                      {formatPenceToGBP(inv.total)}
+                    </p>
+                    {inv.balanceDue > 0 && inv.status !== 'paid' && (
+                      <p className="text-[10px] font-semibold text-rose-600">
+                        Due: {formatPenceToGBP(inv.balanceDue)}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
     </div>
   );
 }
