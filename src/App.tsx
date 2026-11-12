@@ -31,6 +31,9 @@ import {
   AlertTriangle,
   RotateCcw,
   ExternalLink,
+  FileDown,
+  Share2,
+  MessageCircle,
 } from 'lucide-react';
 import {
   TradePayDB,
@@ -47,6 +50,7 @@ import {
   calculateInvoiceTotals,
   InvoiceStatus,
 } from './data.ts';
+import { downloadInvoicePDF, getInvoicePDFFile } from './pdf.ts';
 
 // ------------------------------------------
 // TYPES FOR AI EXTRACTION
@@ -889,6 +893,252 @@ function ConfirmationDialog({
             }`}
           >
             {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// TASK 8: SEND INVOICE SHEET (Share / WhatsApp / Email / PDF)
+// ==========================================
+interface SendInvoiceSheetProps {
+  isOpen: boolean;
+  invoice: Invoice;
+  client?: Client;
+  onClose: () => void;
+}
+
+function SendInvoiceSheet({
+  isOpen,
+  invoice,
+  client,
+  onClose,
+}: SendInvoiceSheetProps) {
+  const [notice, setNotice] = useState<string | null>(null);
+  const [isSharing, setIsSharing] = useState(false);
+
+  if (!isOpen) return null;
+
+  const handleShare = async () => {
+    setIsSharing(true);
+    setNotice(null);
+    try {
+      if (typeof navigator !== 'undefined' && navigator.share) {
+        const file = getInvoicePDFFile(invoice, client);
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            title: `Invoice ${invoice.invoiceNumber}`,
+            text: `Invoice ${invoice.invoiceNumber} from TradePay for ${formatPenceToGBP(invoice.total)}`,
+            files: [file],
+          });
+          return;
+        }
+      }
+      // If Web Share API or file sharing not supported:
+      downloadInvoicePDF(invoice, client);
+      setNotice('PDF downloaded. Attach it to the message.');
+    } catch (err: unknown) {
+      const error = err as Error;
+      if (error.name !== 'AbortError') {
+        downloadInvoicePDF(invoice, client);
+        setNotice('PDF downloaded. Attach it to the message.');
+      }
+    } finally {
+      setIsSharing(false);
+    }
+  };
+
+  const handleWhatsApp = () => {
+    downloadInvoicePDF(invoice, client);
+    setNotice('PDF downloaded. Attach it to the message.');
+
+    const clientName = client?.name || 'Customer';
+    const msg = `Hi ${clientName}, please find attached invoice ${invoice.invoiceNumber} for ${formatPenceToGBP(
+      invoice.total
+    )} from TradePay. Due date: ${invoice.dueDate || 'Upon receipt'}. Balance due: ${formatPenceToGBP(
+      invoice.balanceDue
+    )}.`;
+
+    let cleanPhone = (client?.phone || '').replace(/[^0-9]/g, '');
+    if (cleanPhone.startsWith('0')) {
+      cleanPhone = '44' + cleanPhone.slice(1);
+    }
+    const waUrl = cleanPhone
+      ? `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`
+      : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+
+    try {
+      const a = document.createElement('a');
+      a.href = waUrl;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch {
+      // fallback
+    }
+  };
+
+  const handleEmail = () => {
+    downloadInvoicePDF(invoice, client);
+    setNotice('PDF downloaded. Attach it to the message.');
+
+    const clientName = client?.name || 'Customer';
+    const subject = `Invoice ${invoice.invoiceNumber} from TradePay`;
+    const body = `Hi ${clientName},\n\nPlease find attached invoice ${invoice.invoiceNumber} for ${formatPenceToGBP(
+      invoice.total
+    )}.\nPayment Due: ${invoice.dueDate || 'Upon receipt'}\nBalance Due: ${formatPenceToGBP(
+      invoice.balanceDue
+    )}\n\nThank you for your business!`;
+    const emailTo = client?.email || '';
+    const mailtoUrl = `mailto:${encodeURIComponent(emailTo)}?subject=${encodeURIComponent(
+      subject
+    )}&body=${encodeURIComponent(body)}`;
+
+    try {
+      const a = document.createElement('a');
+      a.href = mailtoUrl;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch {
+      // fallback
+    }
+  };
+
+  const handleDownloadOnly = () => {
+    downloadInvoicePDF(invoice, client);
+    setNotice('PDF downloaded. Attach it to the message.');
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-[2px] flex items-end sm:items-center justify-center p-3 animate-fade-in">
+      <div className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-slate-200/90 space-y-4 animate-in slide-in-from-bottom duration-200">
+        {/* Header */}
+        <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-black text-slate-900">Send Invoice</h3>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                Sent
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {invoice.invoiceNumber} • {client?.name || 'Customer'} • {formatPenceToGBP(invoice.total)}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Notice Banner */}
+        {notice && (
+          <div className="p-3 bg-amber-50/90 border border-amber-200 rounded-xl text-xs text-amber-900 font-medium flex items-center gap-2 animate-fade-in">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>{notice}</span>
+          </div>
+        )}
+
+        {/* Send Action Options */}
+        <div className="space-y-2">
+          {/* 1. Share Option */}
+          <button
+            type="button"
+            onClick={handleShare}
+            disabled={isSharing}
+            className="w-full p-3 rounded-2xl bg-slate-50 hover:bg-slate-100 border border-slate-200 flex items-center justify-between cursor-pointer transition-colors group text-left"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-[#0B1528] text-yellow-400 flex items-center justify-center shrink-0 shadow-xs">
+                {isSharing ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <Share2 className="w-5 h-5" />
+                )}
+              </div>
+              <div>
+                <p className="text-xs font-bold text-slate-900">Share</p>
+                <p className="text-[11px] text-slate-500">System share sheet with PDF</p>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-slate-700" />
+          </button>
+
+          {/* 2. WhatsApp Option */}
+          <button
+            type="button"
+            onClick={handleWhatsApp}
+            className="w-full p-3 rounded-2xl bg-emerald-50/60 hover:bg-emerald-50 border border-emerald-200/80 flex items-center justify-between cursor-pointer transition-colors group text-left"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                <MessageCircle className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-slate-900">WhatsApp</p>
+                <p className="text-[11px] text-slate-500 truncate">
+                  {client?.phone ? `Send to ${client.phone}` : 'Open chat with prepared message'}
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-slate-700" />
+          </button>
+
+          {/* 3. Email Option */}
+          <button
+            type="button"
+            onClick={handleEmail}
+            className="w-full p-3 rounded-2xl bg-blue-50/60 hover:bg-blue-50 border border-blue-200/80 flex items-center justify-between cursor-pointer transition-colors group text-left"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                <Mail className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-slate-900">Email</p>
+                <p className="text-[11px] text-slate-500 truncate">
+                  {client?.email ? `Send to ${client.email}` : 'Open email with subject & body'}
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-slate-700" />
+          </button>
+
+          {/* 4. Download PDF */}
+          <button
+            type="button"
+            onClick={handleDownloadOnly}
+            className="w-full p-3 rounded-2xl bg-slate-50 hover:bg-slate-100 border border-slate-200 flex items-center justify-between cursor-pointer transition-colors group text-left"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-slate-200 text-slate-800 flex items-center justify-center shrink-0 shadow-xs">
+                <FileDown className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-xs font-bold text-slate-900">Download PDF</p>
+                <p className="text-[11px] text-slate-500">Save copy directly to device</p>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-slate-700" />
+          </button>
+        </div>
+
+        {/* Done Button */}
+        <div className="pt-1">
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-full py-2.5 px-4 rounded-xl bg-[#0B1528] hover:bg-slate-800 text-yellow-400 font-bold text-xs shadow-md transition-colors cursor-pointer text-center"
+          >
+            Done
           </button>
         </div>
       </div>
@@ -3339,6 +3589,53 @@ function InvoiceEditorView({
     }
   };
 
+  const [sendSheetInvoice, setSendSheetInvoice] = useState<Invoice | null>(null);
+
+  const handleSaveAndSend = () => {
+    const saved = saveCurrentState('sent');
+    if (saved) {
+      setSendSheetInvoice(saved);
+    }
+  };
+
+  const handleDownloadPDF = () => {
+    const compiledLineItems: LineItem[] = items.map((item) => {
+      const quantity = Math.max(0, parseFloat(item.qtyString) || 0);
+      const unitPrice = poundsToPence(item.unitPricePounds);
+      const totalPrice = calculateLineTotal(quantity, unitPrice);
+      return {
+        id: item.id,
+        description: item.description || 'Service/Materials',
+        type: item.type,
+        quantity,
+        unitPrice,
+        totalPrice,
+      };
+    });
+
+    const targetClient = clients.find((c) => c.id === clientId);
+    const invoiceForPdf: Invoice = {
+      id: currentInvoiceId || 'draft',
+      invoiceNumber: invoiceNumber.trim() || 'DRAFT',
+      clientId,
+      date,
+      dueDate,
+      lineItems: compiledLineItems,
+      vatRate: Number(vatRate) || 0,
+      subtotal: liveTotals.subtotal,
+      vatAmount: liveTotals.vatAmount,
+      total: liveTotals.total,
+      amountPaid: totalPaidPence,
+      balanceDue: liveTotals.balanceDue,
+      status: currentInvoice?.status || 'draft',
+      notes,
+      payments,
+      createdAt: currentInvoice?.createdAt || new Date().toISOString(),
+    };
+
+    downloadInvoicePDF(invoiceForPdf, targetClient);
+  };
+
   // Open manual record payment modal
   const handleOpenRecordPayment = () => {
     // Default to remaining balance
@@ -3494,30 +3791,41 @@ function InvoiceEditorView({
             {invoiceNumber}
           </span>
         </div>
-        {currentInvoiceId ? (
+        <div className="flex items-center gap-1.5">
           <button
-            onClick={() => {
-              setEditorDialog({
-                isOpen: true,
-                message: 'Delete this invoice?',
-                confirmLabel: 'Delete',
-                cancelLabel: 'Cancel',
-                isDanger: true,
-                onConfirm: () => {
-                  TradePayDB.deleteInvoice(currentInvoiceId);
-                  closeEditorDialog();
-                  onDelete();
-                },
-              });
-            }}
-            className="text-xs text-rose-400 hover:text-rose-300 p-1 cursor-pointer"
-            title="Delete invoice"
+            type="button"
+            onClick={handleDownloadPDF}
+            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-yellow-400 text-xs font-semibold cursor-pointer transition-colors"
+            title="Download PDF"
           >
-            <Trash2 className="w-4 h-4" />
+            <FileDown className="w-3.5 h-3.5" />
+            <span className="text-[11px]">PDF</span>
           </button>
-        ) : (
-          <div className="w-6"></div>
-        )}
+          {currentInvoiceId ? (
+            <button
+              onClick={() => {
+                setEditorDialog({
+                  isOpen: true,
+                  message: 'Delete this invoice?',
+                  confirmLabel: 'Delete',
+                  cancelLabel: 'Cancel',
+                  isDanger: true,
+                  onConfirm: () => {
+                    TradePayDB.deleteInvoice(currentInvoiceId);
+                    closeEditorDialog();
+                    onDelete();
+                  },
+                });
+              }}
+              className="text-xs text-rose-400 hover:text-rose-300 p-1 cursor-pointer"
+              title="Delete invoice"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          ) : (
+            <div className="w-1"></div>
+          )}
+        </div>
       </div>
 
       <div className="p-4 space-y-4">
@@ -4097,22 +4405,32 @@ function InvoiceEditorView({
           </div>
         </div>
 
-        {/* Action Buttons: Save as Draft or Save & Send */}
-        <div className="grid grid-cols-2 gap-3 pt-2">
+        {/* Action Buttons: Download PDF, Save as Draft or Save & Send */}
+        <div className="space-y-2.5 pt-2">
           <button
             type="button"
-            onClick={() => handleSaveAndExit('draft')}
-            className="py-3 px-4 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold text-xs transition-colors cursor-pointer text-center"
+            onClick={handleDownloadPDF}
+            className="w-full py-2.5 px-3 rounded-xl bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
           >
-            Save as Draft
+            <FileDown className="w-4 h-4 text-[#0B1528]" />
+            <span>Download PDF</span>
           </button>
-          <button
-            type="button"
-            onClick={() => handleSaveAndExit('sent')}
-            className="py-3 px-4 rounded-xl bg-[#0B1528] hover:bg-slate-800 text-yellow-400 font-bold text-xs shadow-md transition-colors cursor-pointer text-center"
-          >
-            Save & Send
-          </button>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => handleSaveAndExit('draft')}
+              className="py-3 px-4 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold text-xs transition-colors cursor-pointer text-center"
+            >
+              Save as Draft
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveAndSend}
+              className="py-3 px-4 rounded-xl bg-[#0B1528] hover:bg-slate-800 text-yellow-400 font-bold text-xs shadow-md transition-colors cursor-pointer text-center"
+            >
+              Save & Send
+            </button>
+          </div>
         </div>
       </div>
 
@@ -4231,6 +4549,21 @@ function InvoiceEditorView({
         onConfirm={editorDialog.onConfirm}
         onCancel={closeEditorDialog}
       />
+
+      {sendSheetInvoice && (
+        <SendInvoiceSheet
+          isOpen={Boolean(sendSheetInvoice)}
+          invoice={sendSheetInvoice}
+          client={clients.find((c) => c.id === (sendSheetInvoice?.clientId || clientId))}
+          onClose={() => {
+            const finalSaved = sendSheetInvoice;
+            setSendSheetInvoice(null);
+            if (finalSaved) {
+              onSaved(finalSaved);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
